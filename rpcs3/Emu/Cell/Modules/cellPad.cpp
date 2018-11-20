@@ -137,6 +137,8 @@ error_code cellPadClearBuf(u32 port_no)
 	return CELL_OK;
 }
 
+extern bool fakeinput_toggle;
+
 error_code cellPadGetData(u32 port_no, vm::ptr<CellPadData> data)
 {
 	sys_io.trace("cellPadGetData(port_no=%d, data=*0x%x)", port_no, data);
@@ -247,7 +249,30 @@ error_code cellPadGetData(u32 port_no, vm::ptr<CellPadData> data)
 					break;
 				case CELL_PAD_CTRL_CROSS:
 					if (pad->m_press_cross != button.m_value) btnChanged = true;
-					pad->m_press_cross = button.m_value;
+
+					if (fakeinput_toggle)
+					{
+						static u64 timed_change = 0;
+						static u16 button_value = 0;
+						timed_change++;
+						if (timed_change % 50 == 0)
+						{
+							button_value = button_value == 255 ? 0 : 255;
+							btnChanged   = true;
+						}
+
+						if (button_value)
+						{
+							pad->m_digital_2 |= button.m_outKeyCode;
+						}
+
+						pad->m_press_cross = button_value;
+					}
+					else
+					{
+						pad->m_press_cross = button.m_value;
+					}
+
 					break;
 				case CELL_PAD_CTRL_CIRCLE:
 					if (pad->m_press_circle != button.m_value) btnChanged = true;
