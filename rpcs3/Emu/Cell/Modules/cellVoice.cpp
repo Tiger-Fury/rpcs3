@@ -345,6 +345,10 @@ error_code cellVoiceGetPortInfo(u32 portId, vm::ptr<CellVoiceBasePortInfo> pInfo
 	// No nullptr check!
 	pInfo->portType = port->info.portType;
 
+	pInfo->state = manager.voice_service_started ? CELLVOICE_PORTSTATE_READY : CELLVOICE_PORTSTATE_IDLE;
+	pInfo->numEdge = 0;
+	pInfo->numByte = 0;
+
 	// TODO
 
 	return CELL_OK;
