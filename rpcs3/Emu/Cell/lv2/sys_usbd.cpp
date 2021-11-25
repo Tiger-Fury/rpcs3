@@ -232,6 +232,8 @@ usb_handler_thread::usb_handler_thread()
 			found_usio = true;
 		}
 
+		check_device(0x054C, 0x01CB, 0x01CB, "cellUsbPspcm");
+
 	}
 
 	libusb_free_device_list(list, 1);
@@ -662,7 +664,13 @@ error_code sys_usbd_register_ldd(ppu_thread& ppu, u32 handle, vm::ptr<char> s_pr
 	{
 		// Arcade v406 USIO board
 		sys_usbd.warning("sys_usbd_register_ldd(handle=0x%x, s_product=%s, slen_product=0x%x) -> Redirecting to sys_usbd_register_extra_ldd", handle, s_product, slen_product);
-		sys_usbd_register_extra_ldd(ppu, handle, s_product, slen_product, 0x0B9A, 0x0910, 0x0910);// usio
+		sys_usbd_register_extra_ldd(ppu, handle, s_product, slen_product, 0x0B9A, 0x0910, 0x0910);
+	}
+	else if (strcmp(s_product.get_ptr(), "cellUsbPspcm") == 0)
+	{
+		// PSP
+		sys_usbd.warning("sys_usbd_register_ldd(handle=0x%x, s_product=%s, slen_product=0x%x) -> Redirecting to sys_usbd_register_extra_ldd", handle, s_product, slen_product);
+		sys_usbd_register_extra_ldd(ppu, handle, s_product, slen_product, 0x054C, 0x01CB, 0x01CB);
 	}
 	else
 	{
