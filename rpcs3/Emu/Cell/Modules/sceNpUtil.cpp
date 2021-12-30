@@ -48,6 +48,10 @@ error_code sceNpUtilBandwidthTestShutdown(vm::ptr<SceNpUtilBandwidthTestResult> 
 
 	util_manager.is_initialized = false;
 
+	result->upload_bps = 10'000'000;
+	result->download_bps = 100'000'000;
+	result->result = 0;
+
 	return CELL_OK;
 }
 
