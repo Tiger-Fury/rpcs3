@@ -26,9 +26,15 @@ std::string wchar_to_utf8(std::wstring_view src)
 	WideCharToMultiByte(CP_UTF8, 0, src.data(), src.size(), utf8_string.data(), tmp_size, nullptr, nullptr);
 	return utf8_string;
 #else
-	std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t> converter{};
+	std::wstring_convert<std::codecvt_utf8<wchar_t>, wchar_t> converter{};
 	return converter.to_bytes(src.data());
 #endif
+}
+
+std::string utf16_to_utf8(std::u16string_view src)
+{
+	std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> converter{};
+	return converter.to_bytes(src.data());
 }
 
 std::wstring utf8_to_wchar(std::string_view src)
