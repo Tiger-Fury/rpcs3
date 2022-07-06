@@ -65,6 +65,11 @@ std::vector<audio_device_enumerator::audio_device> faudio_enumerator::get_output
 			continue;
 		}
 
+		if (std::char_traits<wchar_t>::length(std::bit_cast<wchar_t*>(&dev_info.DisplayName[0])) == 0)
+		{
+			continue;
+		}
+
 		audio_device dev =
 		{
 			.id = std::to_string(dev_idx),
