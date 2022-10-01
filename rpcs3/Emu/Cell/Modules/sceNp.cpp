@@ -4537,10 +4537,8 @@ error_code sceNpScoreGetFriendsRankingAsync(s32 transId, SceNpScoreBoardId board
 		arrayNum, lastSortDate, totalRecord, option, true);
 }
 
-error_code sceNpScoreCensorComment(s32 transId, vm::cptr<char> comment, vm::ptr<void> option)
+error_code scenp_score_censor_comment(s32 transId, vm::cptr<char> comment, vm::ptr<void> option, bool async)
 {
-	sceNp.todo("sceNpScoreCensorComment(transId=%d, comment=%s, option=*0x%x)", transId, comment, option);
-
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
 	if (!nph.is_NP_Score_init)
@@ -4564,32 +4562,36 @@ error_code sceNpScoreCensorComment(s32 transId, vm::cptr<char> comment, vm::ptr<
 		return SCE_NP_COMMUNITY_ERROR_INVALID_ONLINE_ID;
 	}
 
-	return CELL_OK;
+	auto trans_ctx = idm::get<score_transaction_ctx>(transId);
+
+	if (!trans_ctx)
+	{
+		return SCE_NP_COMMUNITY_ERROR_INVALID_ID;
+	}
+
+	// TODO: actual implementation of this
+	trans_ctx->result = CELL_OK;
+
+	if (async)
+	{
+		return CELL_OK;
+	}
+
+	return *trans_ctx->result;
+}
+
+error_code sceNpScoreCensorComment(s32 transId, vm::cptr<char> comment, vm::ptr<void> option)
+{
+	sceNp.todo("sceNpScoreCensorComment(transId=%d, comment=%s, option=*0x%x)", transId, comment, option);
+
+	return scenp_score_censor_comment(transId, comment, option, false);
 }
 
 error_code sceNpScoreCensorCommentAsync(s32 transId, vm::cptr<char> comment, s32 prio, vm::ptr<void> option)
 {
 	sceNp.todo("sceNpScoreCensorCommentAsync(transId=%d, comment=%s, prio=%d, option=*0x%x)", transId, comment, prio, option);
 
-	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
-
-	if (!nph.is_NP_Score_init)
-	{
-		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
-	}
-
-	if (!comment)
-	{
-		return SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
-	}
-
-	if (strlen(comment.get_ptr()) > SCE_NP_SCORE_CENSOR_COMMENT_MAXLEN || option) // option check at least until fw 4.71
-	{
-		// TODO: is SCE_NP_SCORE_CENSOR_COMMENT_MAXLEN + 1 allowed ?
-		return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
-	}
-
-	return CELL_OK;
+	return scenp_score_censor_comment(transId, comment, option, true);
 }
 
 error_code sceNpScoreSanitizeComment(s32 transId, vm::cptr<char> comment, vm::ptr<char> sanitizedComment, vm::ptr<void> option)
