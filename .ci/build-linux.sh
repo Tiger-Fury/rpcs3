@@ -51,6 +51,7 @@ cmake ..                                               \
     -DCMAKE_AR="$AR"                                   \
     -DCMAKE_RANLIB="$RANLIB"                           \
     -DUSE_SYSTEM_CURL=ON                               \
+    -DUSE_SDL=ON                                       \
     -DOpenGL_GL_PREFERENCE=LEGACY                      \
     -G Ninja
 

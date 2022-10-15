@@ -165,10 +165,10 @@ if(USE_VULKAN)
 			message("-- RPCS3: MoltenVK submodule")
 
 			execute_process(COMMAND "${CMAKE_COMMAND}" -G "${CMAKE_GENERATOR}" .
-    				WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/MoltenVK"
+				WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/MoltenVK"
 			)
 			execute_process(COMMAND "${CMAKE_COMMAND}" --build .
-   	 			WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/MoltenVK"
+				WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/MoltenVK"
 			)
 
 			add_library(moltenvk_lib SHARED IMPORTED)
@@ -328,6 +328,23 @@ add_subdirectory(wolfssl EXCLUDE_FROM_ALL)
 
 # CURL
 add_subdirectory(curl EXCLUDE_FROM_ALL)
+
+# SDL2
+if(USE_SDL)
+	if(USE_SYSTEM_SDL)
+		find_package(SDL2)
+		if(SDL2_FOUND AND NOT SDL2_VERSION VERSION_LESS 2.0.9)
+			message(STATUS "Using system SDL2")
+			add_definitions(-DHAVE_SDL2=1)
+		else()
+			message(FATAL_ERROR "SDL2 is not available on this system")
+		endif()
+	else()
+		message(STATUS "Using static SDL2 from 3rdparty")
+		add_subdirectory(libsdl-org EXCLUDE_FROM_ALL)
+		add_definitions(-DHAVE_SDL2=1)
+	endif()
+endif()
 
 # add nice ALIAS targets for ease of use
 if(USE_SYSTEM_LIBUSB)
