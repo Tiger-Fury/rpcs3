@@ -73,10 +73,11 @@ bool recvmessage_dialog_frame::Exec(SceNpBasicMessageMainType type, SceNpBasicMe
 		recv_result   = result_from_action;
 		result        = true;
 
-		if (!preserve)
-		{
-			m_rpcn->discard_active_message(chosen_msg_id);
-		}
+		// Some games (Jojo EOH) seem to expect the message to be still accessible even if the flag is not set
+		// if (!preserve)
+		// {
+		// 	m_rpcn->discard_active_message(chosen_msg_id);
+		// }
 
 		m_dialog->close();
 	};

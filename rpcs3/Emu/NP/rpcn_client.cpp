@@ -2151,6 +2151,10 @@ namespace rpcn
 	{
 		{
 			std::lock_guard lock(mutex_messages);
+
+			if (!messages.contains(id))
+				return std::nullopt;
+
 			return ::at32(messages, id);
 		}
 	}
