@@ -985,6 +985,23 @@ error_code sceNpBasicSendMessageGui(vm::cptr<SceNpBasicMessageDetails> msg, sys_
 		msg_data.data.assign(msg->data.get_ptr(), msg->data.get_ptr() + msg->size);
 	}
 
+	std::string datrace;
+	const char hex[16] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+
+	const u8* buf = msg->data.get_ptr();
+
+	for (u32 index = 0; index < msg->size; index++)
+	{
+		if ((index % 16) == 0)
+			datrace += '\n';
+
+		datrace += hex[(buf[index] >> 4) & 15];
+		datrace += hex[(buf[index]) & 15];
+		datrace += ' ';
+	}
+
+	sceNp.error("Message Data: %s", datrace);
+
 	bool result = false;
 
 	input::SetIntercepted(true);
@@ -1115,6 +1132,23 @@ error_code sceNpBasicRecvMessageAttachmentLoad(u32 id, vm::ptr<void> buffer, vm:
 	const u32 orig_size = *size;
 	const u32 size_to_copy = std::min(static_cast<u32>(msg.data.size()), orig_size);
 	memcpy(buffer.get_ptr(), msg.data.data(), size_to_copy);
+
+	std::string datrace;
+	const char hex[16] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+
+	const u8* buf = static_cast<u8*>(buffer.get_ptr());
+	for (u32 index = 0; index < size_to_copy; index++)
+	{
+		if ((index % 16) == 0)
+			datrace += '\n';
+
+		datrace += hex[(buf[index] >> 4) & 15];
+		datrace += hex[(buf[index]) & 15];
+		datrace += ' ';
+	}
+
+	sceNp.error("Message Data received: %s", datrace);
+
 
 	*size = size_to_copy;
 	if (size_to_copy < msg.data.size())
