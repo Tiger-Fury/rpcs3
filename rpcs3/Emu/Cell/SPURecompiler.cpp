@@ -8860,22 +8860,11 @@ public:
 			return;
 		}
 
-		// To avoid divergence in online play don't use divergent intel/amd intrinsics when online
-		if (g_cfg.net.net_active == np_internet_status::enabled)
+		register_intrinsic("spu_frest", [&](llvm::CallInst* ci)
 		{
-			register_intrinsic("spu_frest", [&](llvm::CallInst* ci)
-			{
-				return fsplat<f32[4]>(1.0) / value<f32[4]>(ci->getOperand(0));
-			});
-		}
-		else
-		{
-			register_intrinsic("spu_frest", [&](llvm::CallInst* ci)
-			{
-				const auto a = value<f32[4]>(ci->getOperand(0));
-				return fre(a);
-			});
-		}
+			const auto a = value<f32[4]>(ci->getOperand(0));
+			return bitcast<f32[4]>(bitcast<u32[4]>(fre(a)) & splat<u32[4]>(0xFFFFF000));
+		});
 
 		set_vr(op.rt, frest(get_vr<f32[4]>(op.ra)));
 	}
@@ -8895,22 +8884,11 @@ public:
 			return;
 		}
 
-		// To avoid divergence in online play don't use divergent intel/amd intrinsics when online
-		if (g_cfg.net.net_active == np_internet_status::enabled)
+		register_intrinsic("spu_frsqest", [&](llvm::CallInst* ci)
 		{
-			register_intrinsic("spu_frsqest", [&](llvm::CallInst* ci)
-			{
-				return fsplat<f32[4]>(1.0) / fsqrt(fabs(value<f32[4]>(ci->getOperand(0))));
-			});
-		}
-		else
-		{
-			register_intrinsic("spu_frsqest", [&](llvm::CallInst* ci)
-			{
-				const auto a = value<f32[4]>(ci->getOperand(0));
-				return frsqe(fabs(a));
-			});
-		}
+			const auto a = value<f32[4]>(ci->getOperand(0));
+			return bitcast<f32[4]>(bitcast<s32[4]>(frsqe(fabs(a))) & splat<s32[4]>(0xFFFFF000));
+		});
 
 		set_vr(op.rt, frsqest(get_vr<f32[4]>(op.ra)));
 	}
@@ -9633,35 +9611,17 @@ public:
 			return bitcast<f32[4]>((b & 0xff800000u) | (bitcast<u32[4]>(fpcast<f32[4]>(bnew)) & ~0xff800000u)); // Inject old sign and exponent
 		});
 
-		// To avoid divergence in online play don't use divergent intel/amd intrinsics when online
-		if (g_cfg.net.net_active == np_internet_status::enabled)
+		register_intrinsic("spu_re", [&](llvm::CallInst* ci)
 		{
-			register_intrinsic("spu_re", [&](llvm::CallInst* ci)
-			{
-				const auto a = value<f32[4]>(ci->getOperand(0));
-				return fsplat<f32[4]>(1.0) / a;
-			});
+			const auto a = value<f32[4]>(ci->getOperand(0));
+			return bitcast<f32[4]>(bitcast<s32[4]>(fre(a)) & splat<s32[4]>(0xFFFFF000));
+		});
 
-			register_intrinsic("spu_rsqrte", [&](llvm::CallInst* ci)
-			{
-				const auto a = value<f32[4]>(ci->getOperand(0));
-				return fsplat<f32[4]>(1.0) / fsqrt(fabs(a));
-			});
-		}
-		else
+		register_intrinsic("spu_rsqrte", [&](llvm::CallInst* ci)
 		{
-			register_intrinsic("spu_re", [&](llvm::CallInst* ci)
-			{
-				const auto a = value<f32[4]>(ci->getOperand(0));
-				return fre(a);
-			});
-
-			register_intrinsic("spu_rsqrte", [&](llvm::CallInst* ci)
-			{
-				const auto a = value<f32[4]>(ci->getOperand(0));
-				return frsqe(a);
-			});
-		}
+			const auto a = value<f32[4]>(ci->getOperand(0));
+			return bitcast<f32[4]>(bitcast<s32[4]>(frsqe(a)) & splat<s32[4]>(0xFFFFF000));
+		});
 
 		const auto [a, b] = get_vrs<f32[4]>(op.ra, op.rb);
 
