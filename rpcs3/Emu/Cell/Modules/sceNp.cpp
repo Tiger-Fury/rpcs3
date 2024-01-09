@@ -5388,6 +5388,9 @@ error_code sceNpSignalingDeactivateConnection(u32 ctx_id, u32 conn_id)
 		return SCE_NP_SIGNALING_ERROR_NOT_INITIALIZED;
 	}
 
+	auto& sigh = g_fxo->get<named_thread<signaling_handler>>();
+	sigh.deactivate_sig1(conn_id);
+
 	return CELL_OK;
 }
 

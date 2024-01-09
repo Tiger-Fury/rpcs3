@@ -70,8 +70,13 @@ void signaling_handler::set_sig2_cb(u16 sig2_cb_ctx, vm::ptr<SceNpMatching2Signa
 	this->sig2_cb_arg = sig2_cb_arg;
 }
 
-void signaling_handler::signal_sig_callback(u32 conn_id, int event)
+void signaling_handler::signal_sig_callback(u32 conn_id, int event, bool silenced) const
 {
+	if (silenced)
+	{
+		return;
+	}
+
 	if (sig_cb)
 	{
 		sysutil_register_cb([sig_cb = this->sig_cb, sig_cb_ctx = this->sig_cb_ctx, conn_id, event, sig_cb_arg = this->sig_cb_arg](ppu_thread& cb_ppu) -> s32
@@ -83,11 +88,16 @@ void signaling_handler::signal_sig_callback(u32 conn_id, int event)
 	}
 
 	// extended callback also receives normal events
-	signal_ext_sig_callback(conn_id, event);
+	signal_ext_sig_callback(conn_id, event, silenced);
 }
 
-void signaling_handler::signal_ext_sig_callback(u32 conn_id, int event) const
+void signaling_handler::signal_ext_sig_callback(u32 conn_id, int event, bool silenced) const
 {
+	if (silenced)
+	{
+		return;
+	}
+
 	if (sig_ext_cb)
 	{
 		sysutil_register_cb([sig_ext_cb = this->sig_ext_cb, sig_ext_cb_ctx = this->sig_ext_cb_ctx, conn_id, event, sig_ext_cb_arg = this->sig_ext_cb_arg](ppu_thread& cb_ppu) -> s32
@@ -514,16 +524,16 @@ void signaling_handler::update_si_status(std::shared_ptr<signaling_info>& si, s3
 	{
 		si->conn_status = SCE_NP_SIGNALING_CONN_STATUS_ACTIVE;
 
-		signal_sig_callback(si->conn_id, SCE_NP_SIGNALING_EVENT_ESTABLISHED);
+		signal_sig_callback(si->conn_id, SCE_NP_SIGNALING_EVENT_ESTABLISHED, si->silenced);
 		signal_sig2_callback(si->room_id, si->member_id, SCE_NP_MATCHING2_SIGNALING_EVENT_Established);
 
 		if (si->op_activated)
-			signal_ext_sig_callback(si->conn_id, SCE_NP_SIGNALING_EVENT_EXT_MUTUAL_ACTIVATED);
+			signal_ext_sig_callback(si->conn_id, SCE_NP_SIGNALING_EVENT_EXT_MUTUAL_ACTIVATED, si->silenced);
 	}
 	else if ((si->conn_status == SCE_NP_SIGNALING_CONN_STATUS_PENDING || si->conn_status == SCE_NP_SIGNALING_CONN_STATUS_ACTIVE) && new_status == SCE_NP_SIGNALING_CONN_STATUS_INACTIVE)
 	{
 		si->conn_status = SCE_NP_SIGNALING_CONN_STATUS_INACTIVE;
-		signal_sig_callback(si->conn_id, SCE_NP_SIGNALING_EVENT_DEAD);
+		signal_sig_callback(si->conn_id, SCE_NP_SIGNALING_EVENT_DEAD, si->silenced);
 		signal_sig2_callback(si->room_id, si->member_id, SCE_NP_MATCHING2_SIGNALING_EVENT_Dead);
 		retire_all_packets(si);
 	}
@@ -536,15 +546,15 @@ void signaling_handler::update_ext_si_status(std::shared_ptr<signaling_info>& si
 		si->op_activated = true;
 
 		if (si->conn_status != SCE_NP_SIGNALING_CONN_STATUS_ACTIVE)
-			signal_ext_sig_callback(si->conn_id, SCE_NP_SIGNALING_EVENT_EXT_PEER_ACTIVATED);
+			signal_ext_sig_callback(si->conn_id, SCE_NP_SIGNALING_EVENT_EXT_PEER_ACTIVATED, si->silenced);
 		else
-			signal_ext_sig_callback(si->conn_id, SCE_NP_SIGNALING_EVENT_EXT_MUTUAL_ACTIVATED);
+			signal_ext_sig_callback(si->conn_id, SCE_NP_SIGNALING_EVENT_EXT_MUTUAL_ACTIVATED, si->silenced);
 	}
 	else if (!op_activated && si->op_activated)
 	{
 		si->op_activated = false;
 
-		signal_ext_sig_callback(si->conn_id, SCE_NP_SIGNALING_EVENT_EXT_PEER_DEACTIVATED);
+		signal_ext_sig_callback(si->conn_id, SCE_NP_SIGNALING_EVENT_EXT_PEER_DEACTIVATED, si->silenced);
 	}
 }
 
@@ -687,6 +697,7 @@ u32 signaling_handler::init_sig1(const SceNpId& npid)
 	std::lock_guard lock(data_mutex);
 
 	const u32 conn_id = get_always_conn_id(npid);
+	sig_peers[conn_id]->silenced = false;
 
 	if (sig_peers[conn_id]->conn_status == SCE_NP_SIGNALING_CONN_STATUS_INACTIVE)
 	{
@@ -700,6 +711,19 @@ u32 signaling_handler::init_sig1(const SceNpId& npid)
 	}
 
 	return conn_id;
+}
+
+void signaling_handler::deactivate_sig1(u32 conn_id)
+{
+	std::lock_guard lock(data_mutex);
+	
+	if (!sig_peers.contains(conn_id))
+	{
+		return;
+	}
+
+	auto& si = ::at32(sig_peers, conn_id);
+	si->silenced = true;
 }
 
 u32 signaling_handler::init_sig2(const SceNpId& npid, u64 room_id, u16 member_id)

@@ -26,6 +26,7 @@ struct signaling_info
 	// Signaling
 	u32 conn_id = 0;
 	bool op_activated = false;
+	bool silenced = false;
 
 	// Matching2
 	u64 room_id = 0;
@@ -61,6 +62,7 @@ public:
 	void set_self_sig_info(SceNpId& npid);
 
 	u32 init_sig1(const SceNpId& npid);
+	void deactivate_sig1(u32 conn_id);
 	u32 init_sig2(const SceNpId& npid, u64 room_id, u16 member_id);
 	std::optional<signaling_info> get_sig_infos(u32 conn_id);
 	std::optional<u32> get_conn_id_from_npid(const SceNpId& npid);
@@ -121,8 +123,8 @@ private:
 	static void update_si_mapped_addr(std::shared_ptr<signaling_info>& si, u32 new_addr, u16 new_port);
 	void update_si_status(std::shared_ptr<signaling_info>& si, s32 new_status);
 	void update_ext_si_status(std::shared_ptr<signaling_info>& si, bool op_activated);
-	void signal_sig_callback(u32 conn_id, int event);
-	void signal_ext_sig_callback(u32 conn_id, int event) const;
+	void signal_sig_callback(u32 conn_id, int event, bool silenced) const;
+	void signal_ext_sig_callback(u32 conn_id, int event, bool silenced) const;
 	void signal_sig2_callback(u64 room_id, u16 member_id, SceNpMatching2Event event) const;
 
 	static bool validate_signaling_packet(const signaling_packet* sp);
