@@ -34,6 +34,7 @@ namespace np
 
 		rpcn_log.notice("Received notification that user %s(%d) joined the room(%d)", notif_data->roomMemberDataInternal->userInfo.npId.handle.data, notif_data->roomMemberDataInternal->memberId, room_id);
 		extra_nps::print_room_member_data_internal(notif_data->roomMemberDataInternal.get_ptr());
+		extra_nps::print_presence_data(&notif_data->optData);
 
 		if (room_event_cb)
 		{
@@ -69,6 +70,7 @@ namespace np
 
 		rpcn_log.notice("Received notification that user %s(%d) left the room(%d)", notif_data->roomMemberDataInternal->userInfo.npId.handle.data, notif_data->roomMemberDataInternal->memberId, room_id);
 		extra_nps::print_room_member_data_internal(notif_data->roomMemberDataInternal.get_ptr());
+		extra_nps::print_presence_data(&notif_data->optData);
 
 		if (room_event_cb)
 		{
