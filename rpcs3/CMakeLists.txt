@@ -111,6 +111,7 @@ target_link_libraries(rpcs3
         3rdparty::libcurl
         3rdparty::zlib
         3rdparty::opencv
+        3rdparty::fusion
         ${ADDITIONAL_LIBS})
 
 # Unix display manager
