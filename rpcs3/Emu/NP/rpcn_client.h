@@ -255,8 +255,6 @@ namespace rpcn
 		RoomDestroyed,
 		UpdatedRoomDataInternal,
 		UpdatedRoomMemberDataInternal,
-		SignalP2PConnect,
-		_SignalP2PDisconnect,
 		FriendQuery,  // Other user sent a friend request
 		FriendNew,    // Add a friend to the friendlist(either accepted a friend request or friend accepted it)
 		FriendLost,   // Remove friend from the friendlist(user removed friend or friend removed friend)
@@ -264,7 +262,7 @@ namespace rpcn
 		RoomMessageReceived,
 		MessageReceived,
 		FriendPresenceChanged,
-		SignalingInfo,
+		SignalingHelper,
 		MemberJoinedRoomGUI,
 		MemberLeftRoomGUI,
 		RoomDisappearedGUI,

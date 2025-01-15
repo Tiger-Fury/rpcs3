@@ -858,10 +858,13 @@ namespace np
 		auto& data = ::at32(match2_req_results, event_key);
 		data.apply_relocations(dest_addr);
 
-		vm::ptr<void> dest = vm::cast(dest_addr);
+		const u32 size_copied = std::min(size, data.size());
 
-		u32 size_copied = std::min(size, data.size());
-		memcpy(dest.get_ptr(), data.data(), size_copied);
+		if (dest_addr && size)
+		{
+			vm::ptr<void> dest = vm::cast(dest_addr);
+			memcpy(dest.get_ptr(), data.data(), size_copied);
+		}
 
 		np_memory.free(data.addr());
 		match2_req_results.erase(event_key);
@@ -1146,9 +1149,8 @@ namespace np
 					case rpcn::NotificationType::RoomDestroyed: notif_room_destroyed(notif.second); break;
 					case rpcn::NotificationType::UpdatedRoomDataInternal: notif_updated_room_data_internal(notif.second); break;
 					case rpcn::NotificationType::UpdatedRoomMemberDataInternal: notif_updated_room_member_data_internal(notif.second); break;
-					case rpcn::NotificationType::SignalP2PConnect: notif_p2p_connect(notif.second); break;
 					case rpcn::NotificationType::RoomMessageReceived: notif_room_message_received(notif.second); break;
-					case rpcn::NotificationType::SignalingInfo: notif_signaling_info(notif.second); break;
+					case rpcn::NotificationType::SignalingHelper: notif_signaling_helper(notif.second); break;
 					case rpcn::NotificationType::MemberJoinedRoomGUI: notif_member_joined_room_gui(notif.second); break;
 					case rpcn::NotificationType::MemberLeftRoomGUI: notif_member_left_room_gui(notif.second); break;
 					case rpcn::NotificationType::RoomDisappearedGUI: notif_room_disappeared_gui(notif.second); break;

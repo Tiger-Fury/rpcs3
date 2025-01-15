@@ -1,3 +1,9 @@
+table SignalingInfo {
+	member_id:uint16;
+	addr:uint32;
+	port:uint16;
+}
+
 table BinAttr {
 	id:uint16;
 	data:[uint8];
@@ -161,6 +167,11 @@ table JoinRoomRequest {
 	teamId:uint8;
 }
 
+table JoinRoomResponse {
+	room_data: RoomDataInternal;
+	signaling_data: [SignalingInfo];
+}
+
 table LeaveRoomRequest {
 	roomId:uint64;
 	optData:PresenceOptionData;
@@ -219,6 +230,12 @@ table RoomMemberUpdateInfo {
 	roomMemberDataInternal:RoomMemberDataInternal;
 	eventCause:uint8;
 	optData:PresenceOptionData;
+}
+
+table NotificationUserJoinedRoom {
+	room_id:uint64;
+	update_info:RoomMemberUpdateInfo;
+	signaling:SignalingInfo;
 }
 
 table RoomUpdateInfo {
