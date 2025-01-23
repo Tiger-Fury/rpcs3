@@ -15,14 +15,6 @@
 	path = 3rdparty/glslang/glslang
 	url = ../../KhronosGroup/glslang.git
 	ignore = dirty
-[submodule "3rdparty/SPIRV-Tools"]
-	path = 3rdparty/SPIRV/SPIRV-Tools
-	url = ../../KhronosGroup/SPIRV-Tools.git
-	ignore = dirty
-[submodule "3rdparty/SPIRV-Headers"]
-	path = 3rdparty/SPIRV/SPIRV-Headers
-	url = ../../KhronosGroup/SPIRV-Headers.git
-	ignore = dirty
 [submodule "3rdparty/zlib"]
 	path = 3rdparty/zlib/zlib
 	url = ../../madler/zlib
@@ -103,4 +95,12 @@
 [submodule "3rdparty/stblib/stb"]
 	path = 3rdparty/stblib/stb
 	url = ../../nothings/stb.git
+	ignore = dirty
+[submodule "3rdparty/opencv/opencv"]
+	path = 3rdparty/opencv/opencv
+	url = ../../Megamouse/opencv_minimal.git
+	ignore = dirty
+[submodule "3rdparty/fusion/fusion"]
+	path = 3rdparty/fusion/fusion
+	url = ../../xioTechnologies/Fusion.git
 	ignore = dirty

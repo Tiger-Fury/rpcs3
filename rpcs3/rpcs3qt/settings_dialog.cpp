@@ -24,6 +24,7 @@
 #include "emu_settings_type.h"
 #include "render_creator.h"
 #include "microphone_creator.h"
+#include "Emu/NP/rpcn_countries.h"
 
 #include "Emu/GameInfo.h"
 #include "Emu/System.h"
@@ -93,7 +94,7 @@ void remove_item(QComboBox* box, int data_value, int def_value)
 
 extern const std::map<std::string_view, int> g_prx_list;
 
-settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std::shared_ptr<emu_settings> emu_settings, const int& tab_index, QWidget* parent, const GameInfo* game, bool create_cfg_from_global_cfg)
+settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std::shared_ptr<emu_settings> emu_settings, int tab_index, QWidget* parent, const GameInfo* game, bool create_cfg_from_global_cfg)
 	: QDialog(parent)
 	, m_tab_index(tab_index)
 	, ui(new Ui::settings_dialog)
@@ -199,8 +200,8 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		Q_EMIT EmuSettingsApplied();
 
 		// Discord Settings can be saved regardless of WITH_DISCORD_RPC
-		m_gui_settings->SetValue(gui::m_richPresence, m_use_discord);
-		m_gui_settings->SetValue(gui::m_discordState, m_discord_state);
+		m_gui_settings->SetValue(gui::m_richPresence, m_use_discord, false);
+		m_gui_settings->SetValue(gui::m_discordState, m_discord_state, true);
 
 #ifdef WITH_DISCORD_RPC
 		if (m_use_discord != use_discord_old)
@@ -447,9 +448,9 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 	r_creator->update_names(
 	{
-		m_emu_settings->GetLocalizedSetting("Vulkan", emu_settings_type::Renderer, static_cast<int>(video_renderer::vulkan), true),
-		m_emu_settings->GetLocalizedSetting("OpenGl", emu_settings_type::Renderer, static_cast<int>(video_renderer::opengl), true),
-		m_emu_settings->GetLocalizedSetting("Null", emu_settings_type::Renderer, static_cast<int>(video_renderer::null), true)
+		m_emu_settings->GetLocalizedSetting(QString("Vulkan"), emu_settings_type::Renderer, static_cast<int>(video_renderer::vulkan), true),
+		m_emu_settings->GetLocalizedSetting(QString("OpenGl"), emu_settings_type::Renderer, static_cast<int>(video_renderer::opengl), true),
+		m_emu_settings->GetLocalizedSetting(QString("Null"), emu_settings_type::Renderer, static_cast<int>(video_renderer::null), true)
 	});
 
 	// Comboboxes
@@ -479,6 +480,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		};
 
 		const int saved_index = ui->resBox->currentIndex();
+		bool remove_720p = false;
 
 		for (int i = ui->resBox->count() - 1; i >= 0; i--)
 		{
@@ -489,18 +491,36 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 			const bool is_interlaced = (resolution == video_resolution::_1080i ||
 			                            resolution == video_resolution::_480i ||
 			                            resolution == video_resolution::_576i);
-			const bool supported_by_game = !game || (game && game->resolution > 0 && resolutions.contains(resolution) && (game->resolution & resolutions.at(resolution)));
+			const bool supported_by_game = !game || !game->resolution || (resolutions.contains(resolution) && (game->resolution & resolutions.at(resolution)));
 
 			if (!supported_by_game || is_interlaced)
 			{
+				// Don't remove 720p yet. We may need it as fallback if no other resolution is supported.
+				if (resolution == video_resolution::_720p)
+				{
+					remove_720p = true;
+					continue;
+				}
+
 				ui->resBox->removeItem(i);
+
 				if (i == saved_index)
 				{
 					saved_index_removed = true;
 				}
 			}
 		}
+
+		// Remove 720p if unsupported unless it's the only option
+		if (remove_720p && ui->resBox->count() > 1)
+		{
+			if (const int index = find_item(ui->resBox, static_cast<int>(video_resolution::_720p)); index >= 0)
+			{
+				ui->resBox->removeItem(index);
+			}
+		}
 	}
+
 	for (int i = 0; i < ui->resBox->count(); i++)
 	{
 		const auto [text, value] = get_data(ui->resBox, i);
@@ -508,7 +528,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		if (static_cast<video_resolution>(value) == video_resolution::_720p)
 		{
 			// Rename the default resolution for users
-			ui->resBox->setItemText(i, tr("1280x720 (Recommended)", "Resolution"));
+			ui->resBox->setItemText(i, tr("720p (Recommended)", "Resolution"));
 
 			// Set the current selection to the default if the original setting wasn't valid
 			if (saved_index_removed)
@@ -524,6 +544,33 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 	m_emu_settings->EnhanceComboBox(ui->frameLimitBox, emu_settings_type::FrameLimit);
 	SubscribeTooltip(ui->gb_frameLimit, tooltips.settings.frame_limit);
+
+	{
+		const QList<QScreen*> screens = QGuiApplication::screens();
+
+		f64 rate = 20.; // Minimum rate
+
+		for (int i = 0; i < screens.count(); i++)
+		{
+			rate = std::fmax(rate, ::at32(screens, i)->refreshRate());
+		}
+
+		for (int i = 0; i < ui->frameLimitBox->count(); i++)
+		{
+			const QVariantList var_list = ui->frameLimitBox->itemData(i).toList();
+
+			if (var_list.size() != 2 || !var_list[1].canConvert<int>())
+			{
+				fmt::throw_exception("Invalid data found in combobox entry %d (text='%s', listsize=%d, itemcount=%d)", i, ui->frameLimitBox->itemText(i), var_list.size(), ui->frameLimitBox->count());
+			}
+
+			if (static_cast<int>(frame_limit_type::display_rate) == var_list[1].toInt())
+			{
+				ui->frameLimitBox->setItemText(i, tr("Display (%1)", "Frame Limit").arg(std::round(rate)));
+				break;
+			}
+		}
+	}
 
 	m_emu_settings->EnhanceComboBox(ui->antiAliasing, emu_settings_type::MSAA);
 	SubscribeTooltip(ui->gb_antiAliasing, tooltips.settings.anti_aliasing);
@@ -588,14 +635,10 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 		switch (static_cast<zcull_precision_level>(ui->zcullPrecisionMode->itemData(index).toInt()))
 		{
-		case zcull_precision_level::precise:
-			precise = true; break;
-		case zcull_precision_level::approximate:
-			break;
-		case zcull_precision_level::relaxed:
-			relaxed = true; break;
-		default:
-			fmt::throw_exception("Unexpected selection");
+		case zcull_precision_level::precise: precise = true; break;
+		case zcull_precision_level::approximate: break;
+		case zcull_precision_level::relaxed: relaxed = true; break;
+		default: fmt::throw_exception("Unexpected selection");
 		}
 
 		m_emu_settings->SetSetting(emu_settings_type::RelaxedZCULL, relaxed ? "true" : "false");
@@ -609,6 +652,21 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	// 3D
 	m_emu_settings->EnhanceComboBox(ui->stereoRenderMode, emu_settings_type::StereoRenderMode);
 	SubscribeTooltip(ui->gb_stereo, tooltips.settings.stereo_render_mode);
+	if (game)
+	{
+		const auto on_resolution = [this](int index)
+		{
+			const auto [text, value] = get_data(ui->resBox, index);
+			ui->stereoRenderMode->setEnabled(value == static_cast<int>(video_resolution::_720p));
+		};
+		connect(ui->resBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, on_resolution);
+		on_resolution(ui->resBox->currentIndex());
+	}
+	else
+	{
+		ui->stereoRenderMode->setCurrentIndex(find_item(ui->stereoRenderMode, static_cast<int>(g_cfg.video.stereo_render_mode.def)));
+		ui->stereoRenderMode->setEnabled(false);
+	}
 
 	// Checkboxes: main options
 	m_emu_settings->EnhanceCheckBox(ui->dumpColor, emu_settings_type::WriteColorBuffers);
@@ -1040,7 +1098,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	};
 	for (const audio_format_flag& audio_fmt : audio_formats)
 	{
-		const QString audio_format_name = m_emu_settings->GetLocalizedSetting("", emu_settings_type::AudioFormats, static_cast<int>(audio_fmt), true);
+		const QString audio_format_name = m_emu_settings->GetLocalizedSetting(QString(), emu_settings_type::AudioFormats, static_cast<int>(audio_fmt), true);
 		QListWidgetItem* item = new QListWidgetItem(audio_format_name, ui->list_audio_formats);
 		item->setData(Qt::UserRole, static_cast<u32>(audio_fmt));
 		if (audio_fmt == audio_format_flag::lpcm_2_48khz)
@@ -1224,9 +1282,6 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceComboBox(ui->ghltarBox, emu_settings_type::GHLtar);
 	SubscribeTooltip(ui->gb_ghltar_emulated, tooltips.settings.ghltar);
 
-	m_emu_settings->EnhanceComboBox(ui->gameTabletBox, emu_settings_type::GameTablet);
-	SubscribeTooltip(ui->gametablet_emulated, tooltips.settings.gametablet);
-
 	m_emu_settings->EnhanceCheckBox(ui->backgroundInputBox, emu_settings_type::BackgroundInput);
 	SubscribeTooltip(ui->backgroundInputBox, tooltips.settings.background_input);
 
@@ -1373,12 +1428,15 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->enableHostRoot, emu_settings_type::EnableHostRoot);
 	SubscribeTooltip(ui->enableHostRoot, tooltips.settings.enable_host_root);
 
+	m_emu_settings->EnhanceCheckBox(ui->emptyHdd0Tmp, emu_settings_type::EmptyHdd0Tmp);
+	SubscribeTooltip(ui->emptyHdd0Tmp, tooltips.settings.empty_hdd0_tmp);
+
 	m_emu_settings->EnhanceCheckBox(ui->enableCacheClearing, emu_settings_type::LimitCacheSize);
 	SubscribeTooltip(ui->gb_DiskCacheClearing, tooltips.settings.limit_cache_size);
 	if (game)
 		ui->gb_DiskCacheClearing->setDisabled(true);
 	else
-		connect(ui->enableCacheClearing, &QCheckBox::stateChanged, ui->maximumCacheSize, &QSlider::setEnabled);
+		connect(ui->enableCacheClearing, &QCheckBox::checkStateChanged, ui->maximumCacheSize, &QSlider::setEnabled);
 
 	// Date Time Edit Box
 	m_emu_settings->EnhanceDateTimeEdit(ui->console_time_edit, emu_settings_type::ConsoleTimeOffset, tr("dd MMM yyyy HH:mm"), true, true, 15000);
@@ -1440,6 +1498,22 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 	m_emu_settings->EnhanceComboBox(ui->psnStatusBox, emu_settings_type::PSNStatus);
 	SubscribeTooltip(ui->gb_psnStatusBox, tooltips.settings.psn_status);
+
+	settings_dialog::refresh_countrybox();
+	connect(ui->psnCountryBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index)
+	{
+		if (index < 0)
+			return;
+
+		const QVariant country_code = ui->psnCountryBox->itemData(index);
+
+		if (!country_code.isValid() || !country_code.canConvert<QString>())
+			return;
+
+		m_emu_settings->SetSetting(emu_settings_type::PSNCountry, country_code.toString().toStdString());
+	});
+	
+	SubscribeTooltip(ui->gb_psnCountryBox, tooltips.settings.psn_country);
 
 	if (!game)
 	{
@@ -1509,7 +1583,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 	ui->mfcDelayCommand->setChecked(m_emu_settings->GetSetting(emu_settings_type::MFCCommandsShuffling) == "1");
 	SubscribeTooltip(ui->mfcDelayCommand, tooltips.settings.mfc_delay_command);
-	connect(ui->mfcDelayCommand, &QCheckBox::stateChanged, [&](int val)
+	connect(ui->mfcDelayCommand, &QCheckBox::checkStateChanged, [&](Qt::CheckState val)
 	{
 		const std::string str = val != Qt::Unchecked ? "1" : "0";
 		m_emu_settings->SetSetting(emu_settings_type::MFCCommandsShuffling, str);
@@ -1521,6 +1595,9 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 #else
 	ui->disableMslFastMath->setVisible(false);
 #endif
+
+	m_emu_settings->EnhanceCheckBox(ui->disableAsyncHostMM, emu_settings_type::DisableAsyncHostMM);
+	SubscribeTooltip(ui->disableAsyncHostMM, tooltips.settings.disable_async_host_mm);
 
 	// Comboboxes
 
@@ -1758,6 +1835,9 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->showTrophyPopups, emu_settings_type::ShowTrophyPopups);
 	SubscribeTooltip(ui->showTrophyPopups, tooltips.settings.show_trophy_popups);
 
+	m_emu_settings->EnhanceCheckBox(ui->showRpcnPopups, emu_settings_type::ShowRpcnPopups);
+	SubscribeTooltip(ui->showRpcnPopups, tooltips.settings.show_rpcn_popups);
+
 	m_emu_settings->EnhanceCheckBox(ui->useNativeInterface, emu_settings_type::UseNativeInterface);
 	SubscribeTooltip(ui->useNativeInterface, tooltips.settings.use_native_interface);
 
@@ -1767,8 +1847,17 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->showPPUCompilationHint, emu_settings_type::ShowPPUCompilationHint);
 	SubscribeTooltip(ui->showPPUCompilationHint, tooltips.settings.show_ppu_compilation_hint);
 
+	m_emu_settings->EnhanceCheckBox(ui->showAutosaveAutoloadHint, emu_settings_type::ShowAutosaveAutoloadHint);
+	SubscribeTooltip(ui->showAutosaveAutoloadHint, tooltips.settings.show_autosave_autoload_hint);
+
 	m_emu_settings->EnhanceCheckBox(ui->showPressureIntensityToggleHint, emu_settings_type::ShowPressureIntensityToggleHint);
 	SubscribeTooltip(ui->showPressureIntensityToggleHint, tooltips.settings.show_pressure_intensity_toggle_hint);
+
+	m_emu_settings->EnhanceCheckBox(ui->showAnalogLimiterToggleHint, emu_settings_type::ShowAnalogLimiterToggleHint);
+	SubscribeTooltip(ui->showAnalogLimiterToggleHint, tooltips.settings.show_analog_limiter_toggle_hint);
+
+	m_emu_settings->EnhanceCheckBox(ui->showMouseAndKeyboardToggleHint, emu_settings_type::ShowMouseAndKeyboardToggleHint);
+	SubscribeTooltip(ui->showMouseAndKeyboardToggleHint, tooltips.settings.show_mouse_and_keyboard_toggle_hint);
 
 	m_emu_settings->EnhanceCheckBox(ui->pauseDuringHomeMenu, emu_settings_type::PauseDuringHomeMenu);
 	SubscribeTooltip(ui->pauseDuringHomeMenu, tooltips.settings.pause_during_home_menu);
@@ -2387,6 +2476,10 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->perfReport, emu_settings_type::PerformanceReport);
 	SubscribeTooltip(ui->perfReport, tooltips.settings.enable_performance_report);
 
+	// Checkboxes: IO debug options
+	m_emu_settings->EnhanceCheckBox(ui->debugOverlayIO, emu_settings_type::IoDebugOverlay);
+	SubscribeTooltip(ui->debugOverlayIO, tooltips.settings.debug_overlay_io);
+
 	// Comboboxes
 
 	m_emu_settings->EnhanceComboBox(ui->combo_accurate_ppu_128, emu_settings_type::AccuratePPU128Loop, true);
@@ -2403,10 +2496,24 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	}
 }
 
+void settings_dialog::refresh_countrybox()
+{
+	const auto& vec_countries = countries::g_countries;
+	const std::string cur_country = m_emu_settings->GetSetting(emu_settings_type::PSNCountry);
+
+	ui->psnCountryBox->clear();
+
+	for (const auto& [cnty, code] : vec_countries)
+	{
+		ui->psnCountryBox->addItem(QString::fromUtf8(cnty.data(), static_cast<int>(cnty.size())), QString::fromUtf8(code.data(), static_cast<int>(code.size())));
+	}
+	ui->psnCountryBox->setCurrentIndex(ui->psnCountryBox->findData(QString::fromStdString(cur_country)));
+	ui->psnCountryBox->model()->sort(0, Qt::AscendingOrder);
+}
+
 void settings_dialog::closeEvent([[maybe_unused]] QCloseEvent* event)
 {
 	m_gui_settings->SetValue(gui::cfg_geometry, saveGeometry());
-	m_gui_settings->sync();
 }
 
 settings_dialog::~settings_dialog()
@@ -2503,14 +2610,11 @@ void settings_dialog::ApplyStylesheet(bool reset)
 	}
 }
 
-int settings_dialog::exec()
+void settings_dialog::open()
 {
-	// singleShot Hack to fix following bug:
-	// If we use setCurrentIndex now we will miraculously see a resize of the dialog as soon as we
-	// switch to the cpu tab after conjuring the settings_dialog with another tab opened first.
-	// Weirdly enough this won't happen if we change the tab order so that anything else is at index 0.
-	ui->tab_widget_settings->setCurrentIndex(0);
-	QTimer::singleShot(0, [this]{ ui->tab_widget_settings->setCurrentIndex(m_tab_index); });
+	QDialog::open();
+
+	ui->tab_widget_settings->setCurrentIndex(m_tab_index);
 
 	// Open a dialog if your config file contained invalid entries
 	QTimer::singleShot(10, [this]
@@ -2536,14 +2640,12 @@ int settings_dialog::exec()
 			}
 		}
 	});
-
-	return QDialog::exec();
 }
 
 void settings_dialog::SubscribeDescription(QLabel* description)
 {
 	description->setFixedHeight(description->sizeHint().height());
-	m_description_labels.append(QPair<QLabel*, QString>(description, description->text()));
+	m_description_labels.push_back(std::pair<QLabel*, QString>(description, description->text()));
 }
 
 void settings_dialog::SubscribeTooltip(QObject* object, const QString& tooltip)
@@ -2576,11 +2678,9 @@ bool settings_dialog::eventFilter(QObject* object, QEvent* event)
 	{
 		const int i = ui->tab_widget_settings->currentIndex();
 
-		if (i < m_description_labels.size())
+		if (i >= 0 && static_cast<usz>(i) < m_description_labels.size())
 		{
-			QLabel* label = m_description_labels[i].first;
-
-			if (label)
+			if (QLabel* label = m_description_labels[i].first)
 			{
 				if (event->type() == QEvent::Enter)
 				{
@@ -2588,8 +2688,7 @@ bool settings_dialog::eventFilter(QObject* object, QEvent* event)
 				}
 				else if (event->type() == QEvent::Leave)
 				{
-					const QString description = m_description_labels[i].second;
-					label->setText(description);
+					label->setText(m_description_labels[i].second);
 				}
 			}
 		}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../CPU/CPUThread.h"
+#include "../CPU/Hypervisor.h"
 #include "../Memory/vm_ptr.h"
 #include "Utilities/lockless.h"
 #include "Utilities/BitField.h"
@@ -149,6 +150,7 @@ public:
 	virtual void cpu_task() override final;
 	virtual void cpu_sleep() override;
 	virtual void cpu_on_stop() override;
+	virtual void cpu_wait(bs_t<cpu_flag> old) override;
 	virtual ~ppu_thread() override;
 
 	SAVESTATE_INIT_POS(3);
@@ -303,7 +305,8 @@ public:
 	// Thread name
 	atomic_ptr<std::string> ppu_tname;
 
-	u64 saved_native_sp = 0; // Host thread's stack pointer for emulated longjmp
+	// Hypervisor context data
+	rpcs3::hypervisor_context_t hv_ctx; // HV context for gate enter exit. Keep at a low struct offset.
 
 	u64 last_ftsc = 0;
 	u64 last_ftime = 0;

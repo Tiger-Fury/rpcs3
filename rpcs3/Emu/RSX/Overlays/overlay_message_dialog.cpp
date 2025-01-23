@@ -92,7 +92,7 @@ namespace rsx
 
 			update_custom_background();
 
-			if (background_image && background_image->data)
+			if (background_image && background_image->get_data())
 			{
 				result.add(background_poster.get_compiled());
 			}
@@ -201,9 +201,10 @@ namespace rsx
 				fade_animation.update(timestamp_us);
 		}
 
-		error_code message_dialog::show(bool is_blocking, const std::string& text, const MsgDialogType& type, std::function<void(s32 status)> on_close)
+		error_code message_dialog::show(bool is_blocking, const std::string& text, const MsgDialogType& type, msg_dialog_source source, std::function<void(s32 status)> on_close)
 		{
 			visible = false;
+			m_source = source;
 
 			num_progress_bars = type.progress_bar_count;
 			if (num_progress_bars)
@@ -358,11 +359,11 @@ namespace rsx
 					if (const auto picture_path = Emu.GetBackgroundPicturePath(); fs::exists(picture_path))
 					{
 						background_image = std::make_unique<image_info>(picture_path.c_str());
-						dirty |= !!background_image->data;
+						dirty |= !!background_image->get_data();
 					}
 				}
 
-				if (dirty && background_image && background_image->data)
+				if (dirty && background_image && background_image->get_data())
 				{
 					const f32 color              = (100 - background_darkening_strength) / 100.f;
 					background_poster.fore_color = color4f(color, color, color, 1.);

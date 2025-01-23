@@ -59,11 +59,7 @@ namespace np
 {
 	std::string get_players_history_path()
 	{
-#ifdef _WIN32
-		return fs::get_config_dir() + "config/players_history.yml";
-#else
-		return fs::get_config_dir() + "players_history.yml";
-#endif
+		return fs::get_config_dir(true) + "players_history.yml";
 	}
 
 	std::map<std::string, player_history> load_players_history()
@@ -502,7 +498,7 @@ namespace np
 
 	np_handler::~np_handler()
 	{
-		std::unordered_map<u32, std::shared_ptr<generic_async_transaction_context>> moved_trans;
+		std::unordered_map<u32, shared_ptr<generic_async_transaction_context>> moved_trans;
 		{
 			std::lock_guard lock(mutex_async_transactions);
 			moved_trans = std::move(async_transactions);
@@ -761,14 +757,14 @@ namespace np
 			np_memory.setup(poolptr, poolsize);
 		}
 
-		memset(&npid, 0, sizeof(npid));
-		memset(&online_name, 0, sizeof(online_name));
-		memset(&avatar_url, 0, sizeof(avatar_url));
+		std::memset(&npid, 0, sizeof(npid));
+		std::memset(&online_name, 0, sizeof(online_name));
+		std::memset(&avatar_url, 0, sizeof(avatar_url));
 
 		if (g_cfg.net.psn_status >= np_psn_status::psn_fake)
 		{
 			g_cfg_rpcn.load(); // Ensures config is loaded even if rpcn is not running for simulated
-			std::string s_npid = g_cfg_rpcn.get_npid();
+			const std::string s_npid = g_cfg_rpcn.get_npid();
 			ensure(!s_npid.empty()); // It should have been generated before this
 
 			string_to_npid(s_npid, npid);
@@ -978,17 +974,20 @@ namespace np
 			queue_basic_events.pop();
 		}
 
-		const u32 size_avail = *size;
-		u32 res_size         = std::min(static_cast<u32>(cur_event.data.size()), size_avail);
-
 		*event = cur_event.event;
 		memcpy(from.get_ptr(), &cur_event.from, sizeof(cur_event.from));
-		memcpy(data.get_ptr(), cur_event.data.data(), res_size);
-		*size = res_size;
-
-		if (res_size < cur_event.data.size())
+		if (cur_event.event != SCE_NP_BASIC_EVENT_OFFLINE)
 		{
-			return SCE_NP_BASIC_ERROR_DATA_LOST;
+			const u32 size_avail = *size;
+			const u32 res_size   = std::min(static_cast<u32>(cur_event.data.size()), size_avail);
+
+			memcpy(data.get_ptr(), cur_event.data.data(), res_size);
+			*size = res_size;
+
+			if (res_size < cur_event.data.size())
+			{
+				return SCE_NP_BASIC_ERROR_DATA_LOST;
+			}
 		}
 
 		nph_log.notice("basic_event: event:%d, from:%s(%s), size:%d", *event, static_cast<char*>(from->userId.handle.data), static_cast<char*>(from->name.data), *size);
@@ -996,7 +995,7 @@ namespace np
 		return CELL_OK;
 	}
 
-	std::optional<std::shared_ptr<std::pair<std::string, message_data>>> np_handler::get_message(u64 id)
+	std::optional<shared_ptr<std::pair<std::string, message_data>>> np_handler::get_message(u64 id)
 	{
 		return get_rpcn()->get_message(id);
 	}
@@ -1016,7 +1015,7 @@ namespace np
 		}
 	}
 
-	std::optional<std::shared_ptr<std::pair<std::string, message_data>>> np_handler::get_message_selected(SceNpBasicAttachmentDataId id)
+	std::optional<shared_ptr<std::pair<std::string, message_data>>> np_handler::get_message_selected(SceNpBasicAttachmentDataId id)
 	{
 		switch (id)
 		{
@@ -1119,7 +1118,17 @@ namespace np
 					case rpcn::CommandType::TusGetMultiUserDataStatus: reply_tus_get_multiuser_data_status(req_id, data); break;
 					case rpcn::CommandType::TusGetFriendsDataStatus: reply_tus_get_friends_data_status(req_id, data); break;
 					case rpcn::CommandType::TusDeleteMultiSlotData: reply_tus_delete_multislot_data(req_id, data); break;
-					default: rpcn_log.error("Unknown reply(%d) received!", command); break;
+					case rpcn::CommandType::CreateRoomGUI: reply_create_room_gui(req_id, data); break;
+					case rpcn::CommandType::JoinRoomGUI: reply_join_room_gui(req_id, data); break;
+					case rpcn::CommandType::LeaveRoomGUI: reply_leave_room_gui(req_id, data); break;
+					case rpcn::CommandType::GetRoomListGUI: reply_get_room_list_gui(req_id, data); break;
+					case rpcn::CommandType::SetRoomSearchFlagGUI: reply_set_room_search_flag_gui(req_id, data); break;
+					case rpcn::CommandType::GetRoomSearchFlagGUI: reply_get_room_search_flag_gui(req_id, data); break;
+					case rpcn::CommandType::SetRoomInfoGUI: reply_set_room_info_gui(req_id, data); break;
+					case rpcn::CommandType::GetRoomInfoGUI: reply_get_room_info_gui(req_id, data); break;
+					case rpcn::CommandType::QuickMatchGUI: reply_quickmatch_gui(req_id, data); break;
+					case rpcn::CommandType::SearchJoinRoomGUI: reply_searchjoin_gui(req_id, data); break;
+					default: fmt::throw_exception("Unknown reply(%d) received!", command); break;
 					}
 				}
 
@@ -1136,7 +1145,13 @@ namespace np
 					case rpcn::NotificationType::SignalP2PConnect: notif_p2p_connect(notif.second); break;
 					case rpcn::NotificationType::RoomMessageReceived: notif_room_message_received(notif.second); break;
 					case rpcn::NotificationType::SignalingInfo: notif_signaling_info(notif.second); break;
-					default: rpcn_log.error("Unknown notification(%d) received!", notif.first); break;
+					case rpcn::NotificationType::MemberJoinedRoomGUI: notif_member_joined_room_gui(notif.second); break;
+					case rpcn::NotificationType::MemberLeftRoomGUI: notif_member_left_room_gui(notif.second); break;
+					case rpcn::NotificationType::RoomDisappearedGUI: notif_room_disappeared_gui(notif.second); break;
+					case rpcn::NotificationType::RoomOwnerChangedGUI: notif_room_owner_changed_gui(notif.second); break;
+					case rpcn::NotificationType::UserKickedGUI: notif_user_kicked_gui(notif.second); break;
+					case rpcn::NotificationType::QuickMatchCompleteGUI: notif_quickmatch_complete_gui(notif.second); break;
+					default: fmt::throw_exception("Unknown notification(%d) received!", notif.first); break;
 					}
 				}
 
@@ -1421,7 +1436,7 @@ namespace np
 	void np_handler::save_players_history()
 	{
 #ifdef _WIN32
-		const std::string path_to_cfg = fs::get_config_dir() + "config/";
+		const std::string path_to_cfg = fs::get_config_dir(true);
 		if (!fs::create_path(path_to_cfg))
 		{
 			nph_log.error("Could not create path: %s", path_to_cfg);
@@ -1622,4 +1637,50 @@ namespace np
 
 		return {include_onlinename, include_avatarurl};
 	}
+
+	void np_handler::add_gui_request(u32 req_id, u32 ctx_id)
+	{
+		std::lock_guard lock(gui_requests.mutex);
+		ensure(gui_requests.list.insert({req_id, ctx_id}).second);
+	}
+
+	void np_handler::remove_gui_request(u32 req_id)
+	{
+		std::lock_guard lock(gui_requests.mutex);
+		if (gui_requests.list.erase(req_id) != 1)
+		{
+			rpcn_log.error("Failed to erase gui request %d", req_id);
+		}
+	}
+
+	u32 np_handler::take_gui_request(u32 req_id)
+	{
+		std::lock_guard lock(gui_requests.mutex);
+
+		if (!gui_requests.list.contains(req_id))
+		{
+			return 0;
+		}
+
+		const u32 ctx_id = ::at32(gui_requests.list, req_id);
+		gui_requests.list.erase(req_id);
+
+		return ctx_id;
+	}
+
+	shared_ptr<matching_ctx> np_handler::take_pending_gui_request(u32 req_id)
+	{
+		const u32 ctx_id = take_gui_request(req_id);
+
+		if (!ctx_id)
+			return {};
+
+		auto ctx = get_matching_context(ctx_id);
+
+		if (!ctx)
+			return {};
+
+		return ctx;
+	}
+
 } // namespace np

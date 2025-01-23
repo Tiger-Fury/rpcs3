@@ -276,26 +276,26 @@ bool infinity_base::remove_figure(u8 position)
 	std::lock_guard lock(infinity_mutex);
 	infinity_figure& figure = figures[position];
 
-	if (figure.present)
+	if (!figure.present)
 	{
-		position = derive_figure_position(position);
-		if (position == 0)
-		{
-			return false;
-		}
-
-		figure.present = false;
-
-		std::array<u8, 32> figure_change_response = {0xab, 0x04, position, 0x09, figure.order_added,
-			0x01};
-		figure_change_response[6] = generate_checksum(figure_change_response, 6);
-		m_figure_added_removed_responses.push(figure_change_response);
-
-		figure.save();
-		figure.inf_file.close();
-		return true;
+		return false;
 	}
-	return false;
+
+	position = derive_figure_position(position);
+	if (position == 0)
+	{
+		return false;
+	}
+
+	figure.present = false;
+
+	std::array<u8, 32> figure_change_response = {0xab, 0x04, position, 0x09, figure.order_added, 0x01};
+	figure_change_response[6] = generate_checksum(figure_change_response, 6);
+	m_figure_added_removed_responses.push(figure_change_response);
+
+	figure.save();
+	figure.inf_file.close();
+	return true;
 }
 
 u32 infinity_base::load_figure(const std::array<u8, 0x14 * 0x10>& buf, fs::file in_file, u8 position)
@@ -371,6 +371,16 @@ usb_device_infinity::usb_device_infinity(const std::array<u8, 7>& location)
 
 usb_device_infinity::~usb_device_infinity()
 {
+}
+
+std::shared_ptr<usb_device> usb_device_infinity::make_instance(u32, const std::array<u8, 7>& location)
+{
+	return std::make_shared<usb_device_infinity>(location);
+}
+
+u16 usb_device_infinity::get_num_emu_devices()
+{
+	return 1;
 }
 
 void usb_device_infinity::control_transfer(u8 bmRequestType, u8 bRequest, u16 wValue, u16 wIndex, u16 wLength, u32 buf_size, u8* buf, UsbTransfer* transfer)

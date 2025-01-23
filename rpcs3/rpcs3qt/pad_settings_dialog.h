@@ -65,6 +65,8 @@ class pad_settings_dialog : public QDialog
 		id_pad_rstick_up,
 
 		id_pressure_intensity, // Special button for pressure intensity
+		id_analog_limiter, // Special button for analog limiter
+		id_orientation_reset, // Special button for orientation reset
 
 		id_pad_end, // end
 
@@ -121,10 +123,12 @@ private:
 	bool m_enable_battery_led{ false };
 	bool m_enable_motion{ false };
 	bool m_enable_pressure_intensity_button{ true };
+	bool m_enable_analog_limiter_button{ true };
+	bool m_enable_orientation_reset_button{ true };
 
 	// Button Mapping
 	QButtonGroup* m_pad_buttons = nullptr;
-	u32 m_button_id = id_pad_begin;
+	atomic_t<u32> m_button_id = button_ids::id_pad_begin;
 	std::map<int /*id*/, pad_button /*info*/> m_cfg_entries;
 	std::map<int /*id*/, std::string> m_duplicate_buttons;
 
@@ -135,8 +139,8 @@ private:
 	int m_ry = 0;
 
 	// Rumble
-	s32 m_min_force = 0;
-	s32 m_max_force = 0;
+	static constexpr u8 m_min_force = 0;
+	static constexpr u8 m_max_force = 255;
 
 	// Backup for standard button palette
 	QPalette m_palette;
@@ -166,6 +170,7 @@ private:
 	{
 		PadHandlerBase::connection status = PadHandlerBase::connection::disconnected;
 		bool has_new_data = false;
+		u32 button_id = button_ids::id_pad_begin;
 		u16 val = 0;
 		std::string name;
 		std::string pad_name;
@@ -185,7 +190,7 @@ private:
 	void CancelExit();
 
 	// Set vibrate data while keeping the current color
-	void SetPadData(u32 large_motor, u32 small_motor, bool led_battery_indicator = false);
+	void SetPadData(u8 large_motor, u8 small_motor, bool led_battery_indicator = false);
 
 	/** Update all the Button Labels with current button mapping */
 	void UpdateLabels(bool is_reset = false);
@@ -204,7 +209,7 @@ private:
 	void ReloadButtons();
 
 	/** Repaints a stick deadzone preview label */
-	void RepaintPreviewLabel(QLabel* l, int deadzone, int anti_deadzone, int desired_width, int x, int y, int squircle, double multiplier) const;
+	void RepaintPreviewLabel(QLabel* label, int deadzone, int anti_deadzone, int desired_width, int x, int y, int squircle, double multiplier) const;
 
 	QString GetLocalizedPadHandler(const QString& original, pad_handler handler);
 	QString GetLocalizedPadName(pad_handler handler, const QString& original, usz index);

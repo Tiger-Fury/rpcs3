@@ -421,6 +421,11 @@ namespace gcm
 
 	enum
 	{
+		RSX_TEXTURE_REMAP_IDENTITY = 0xAAE4,
+	};
+
+	enum
+	{
 		CELL_GCM_POINT_SPRITE_RMODE_ZERO   = 0,
 		CELL_GCM_POINT_SPRITE_RMODE_FROM_R = 1,
 		CELL_GCM_POINT_SPRITE_RMODE_FROM_S = 2,
@@ -450,7 +455,8 @@ namespace gcm
 		RSX_SHADER_CONTROL_UNKNOWN1 = 0x8000, // seemingly set when srgb packer is used??
 
 		// Custom
-		RSX_SHADER_CONTROL_ATTRIBUTE_INTERPOLATION = 0x10000 // Rasterizing triangles and not lines or points
+		RSX_SHADER_CONTROL_ATTRIBUTE_INTERPOLATION = 0x10000, // Rasterizing triangles and not lines or points
+		RSX_SHADER_CONTROL_INSTANCED_CONSTANTS     = 0x20000, // Support instance ID offsets when loading constants
 	};
 
 	// GCM Reports

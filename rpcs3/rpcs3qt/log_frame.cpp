@@ -24,8 +24,6 @@ extern std::array<std::deque<std::string>, 16> g_tty_input;
 extern std::mutex g_tty_mutex;
 extern bool g_log_all_errors;
 
-constexpr auto qstr = QString::fromStdString;
-
 struct gui_listener : logs::listener
 {
 	atomic_t<logs::level> enabled{logs::level{0xff}};
@@ -159,7 +157,7 @@ log_frame::log_frame(std::shared_ptr<gui_settings> _gui_settings, QWidget* paren
 	setWidget(m_tabWidget);
 
 	// Open or create TTY.log
-	m_tty_file.open(fs::get_cache_dir() + "TTY.log", fs::read + fs::create);
+	m_tty_file.open(fs::get_log_dir() + "TTY.log", fs::read + fs::create);
 
 	CreateAndConnectActions();
 	LoadSettings();
@@ -273,10 +271,10 @@ void log_frame::CreateAndConnectActions()
 	m_ansi_act_tty = new QAction(tr("ANSI Code (TTY)"), this);
 	m_ansi_act_tty->setCheckable(true);
 	connect(m_ansi_act_tty, &QAction::toggled, [this](bool checked)
-		{
-			m_gui_settings->SetValue(gui::l_ansi_code, checked);
-			m_ansi_tty = checked;
-		});
+	{
+		m_gui_settings->SetValue(gui::l_ansi_code, checked);
+		m_ansi_tty = checked;
+	});
 
 	m_tty_channel_acts = new QActionGroup(this);
 	// Special Channel: All
@@ -481,21 +479,21 @@ void log_frame::LoadSettings()
 void log_frame::RepaintTextColors()
 {
 	// Backup old colors
-	QList<QColor> old_colors = m_color;
+	std::vector<QColor> old_colors = m_color;
 	QColor old_stack_color = m_color_stack;
 
 	const QColor color = gui::utils::get_foreground_color();
 
 	// Get text color. Do this once to prevent possible slowdown
 	m_color.clear();
-	m_color.append(gui::utils::get_label_color("log_level_always", Qt::darkCyan, Qt::cyan));
-	m_color.append(gui::utils::get_label_color("log_level_fatal", Qt::darkMagenta, Qt::magenta));
-	m_color.append(gui::utils::get_label_color("log_level_error", Qt::red, Qt::red));
-	m_color.append(gui::utils::get_label_color("log_level_todo", Qt::darkYellow, Qt::darkYellow));
-	m_color.append(gui::utils::get_label_color("log_level_success", Qt::darkGreen, Qt::green));
-	m_color.append(gui::utils::get_label_color("log_level_warning", Qt::darkYellow, Qt::darkYellow));
-	m_color.append(gui::utils::get_label_color("log_level_notice", color, color));
-	m_color.append(gui::utils::get_label_color("log_level_trace", color, color));
+	m_color.push_back(gui::utils::get_label_color("log_level_always", Qt::darkCyan, Qt::cyan));
+	m_color.push_back(gui::utils::get_label_color("log_level_fatal", Qt::darkMagenta, Qt::magenta));
+	m_color.push_back(gui::utils::get_label_color("log_level_error", Qt::red, Qt::red));
+	m_color.push_back(gui::utils::get_label_color("log_level_todo", Qt::darkYellow, Qt::darkYellow));
+	m_color.push_back(gui::utils::get_label_color("log_level_success", Qt::darkGreen, Qt::green));
+	m_color.push_back(gui::utils::get_label_color("log_level_warning", Qt::darkYellow, Qt::darkYellow));
+	m_color.push_back(gui::utils::get_label_color("log_level_notice", color, color));
+	m_color.push_back(gui::utils::get_label_color("log_level_trace", color, color));
 
 	m_color_stack = gui::utils::get_label_color("log_stack", color, color);
 
@@ -891,7 +889,7 @@ void log_frame::UpdateUI()
 			}
 
 			// Print UTF-8 text.
-			m_log_text += escaped(qstr(packet->msg), QString{});
+			m_log_text += escaped(QString::fromStdString(packet->msg), QString{});
 
 			if (m_stack_log)
 			{

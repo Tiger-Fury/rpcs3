@@ -14,6 +14,30 @@ game_list::game_list() : QTableWidget(), game_list_base()
 	};
 }
 
+void game_list::sync_header_actions(QList<QAction*>& actions, std::function<bool(int)> get_visibility)
+{
+	ensure(get_visibility);
+
+	bool is_dirty = false;
+
+	for (int col = 0; col < actions.count(); ++col)
+	{
+		const bool is_hidden = !get_visibility(col);
+		actions[col]->setChecked(!is_hidden);
+
+		if (isColumnHidden(col) != is_hidden)
+		{
+			setColumnHidden(col, is_hidden);
+			is_dirty = true;
+		}
+	}
+
+	if (is_dirty)
+	{
+		fix_narrow_columns();
+	}
+}
+
 void game_list::create_header_actions(QList<QAction*>& actions, std::function<bool(int)> get_visibility, std::function<void(int, bool)> set_visibility)
 {
 	ensure(get_visibility);
@@ -48,6 +72,7 @@ void game_list::create_header_actions(QList<QAction*>& actions, std::function<bo
 					return;
 				}
 			}
+
 			setColumnHidden(col, !checked); // Negate because it's a set col hidden and we have menu say show.
 			set_visibility(col, checked);
 
@@ -56,11 +81,9 @@ void game_list::create_header_actions(QList<QAction*>& actions, std::function<bo
 				fix_narrow_columns();
 			}
 		});
-
-		const bool vis = get_visibility(col);
-		actions[col]->setChecked(vis);
-		setColumnHidden(col, !vis);
 	}
+
+	sync_header_actions(actions, get_visibility);
 }
 
 void game_list::clear_list()
@@ -89,7 +112,7 @@ void game_list::fix_narrow_columns()
 	}
 }
 
-void game_list::mousePressEvent(QMouseEvent *event)
+void game_list::mousePressEvent(QMouseEvent* event)
 {
 	if (QTableWidgetItem* item = itemAt(event->pos()); !item || !item->data(Qt::UserRole).isValid())
 	{
@@ -99,7 +122,7 @@ void game_list::mousePressEvent(QMouseEvent *event)
 	QTableWidget::mousePressEvent(event);
 }
 
-void game_list::mouseMoveEvent(QMouseEvent *event)
+void game_list::mouseMoveEvent(QMouseEvent* event)
 {
 	movie_item* new_item = static_cast<movie_item*>(itemAt(event->pos()));
 
@@ -118,6 +141,21 @@ void game_list::mouseMoveEvent(QMouseEvent *event)
 	m_last_hover_item = new_item;
 }
 
+void game_list::mouseDoubleClickEvent(QMouseEvent* ev)
+{
+	if (!ev) return;
+
+	// Qt's itemDoubleClicked signal doesn't distinguish between mouse buttons and there is no simple way to get the pressed button.
+	// So we have to ignore this event when another button is pressed.
+	if (ev->button() != Qt::LeftButton)
+	{
+		ev->ignore();
+		return;
+	}
+
+	QTableWidget::mouseDoubleClickEvent(ev);
+}
+
 void game_list::keyPressEvent(QKeyEvent* event)
 {
 	const auto modifiers = event->modifiers();
@@ -131,7 +169,7 @@ void game_list::keyPressEvent(QKeyEvent* event)
 	QTableWidget::keyPressEvent(event);
 }
 
-void game_list::leaveEvent(QEvent */*event*/)
+void game_list::leaveEvent(QEvent* /*event*/)
 {
 	if (m_last_hover_item)
 	{

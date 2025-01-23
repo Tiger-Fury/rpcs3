@@ -164,7 +164,7 @@ namespace gl
 			if (enable_blending)
 			{
 				cmd->enablei(GL_BLEND, 0);
-				glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+				glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
 				glBlendEquation(GL_FUNC_ADD);
 			}
 			else
@@ -217,7 +217,7 @@ namespace gl
 	gl::texture_view* ui_overlay_renderer::load_simple_image(rsx::overlays::image_info* desc, bool temp_resource, u32 owner_uid)
 	{
 		auto tex = std::make_unique<gl::texture>(GL_TEXTURE_2D, desc->w, desc->h, 1, 1, GL_RGBA8);
-		tex->copy_from(desc->data, gl::texture::format::rgba, gl::texture::type::uint_8_8_8_8, {});
+		tex->copy_from(desc->get_data(), gl::texture::format::rgba, gl::texture::type::uint_8_8_8_8, {});
 
 		GLenum remap[] = { GL_RED, GL_ALPHA, GL_BLUE, GL_GREEN };
 		auto view = std::make_unique<gl::texture_view>(tex.get(), remap);

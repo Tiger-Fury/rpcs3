@@ -4,11 +4,7 @@
 #include "Utilities/File.h"
 
 mouse_config::mouse_config()
-#ifdef _WIN32
-	: cfg_name(fs::get_config_dir() + "config/config_mouse.yml")
-#else
-	: cfg_name(fs::get_config_dir() + "config_mouse.yml")
-#endif
+	: cfg_name(fs::get_config_dir(true) + "config_mouse.yml")
 {
 }
 
@@ -19,9 +15,14 @@ bool mouse_config::exist() const
 
 bool mouse_config::load()
 {
+	g_cfg_mouse.from_default();
+
 	if (fs::file cfg_file{cfg_name, fs::read})
 	{
-		return from_string(cfg_file.to_string());
+		if (const std::string content = cfg_file.to_string(); !content.empty())
+		{
+			return from_string(content);
+		}
 	}
 
 	return false;

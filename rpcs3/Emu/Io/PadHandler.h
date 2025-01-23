@@ -5,6 +5,15 @@
 #include "pad_config_types.h"
 #include "util/types.hpp"
 
+#ifndef _MSC_VER
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#endif
+#include "3rdparty/fusion/fusion/Fusion/Fusion.h"
+#ifndef _MSC_VER
+#pragma GCC diagnostic pop
+#endif
+
 #include <cmath>
 #include <functional>
 #include <string>
@@ -23,10 +32,27 @@ public:
 	u8 player_id{0};
 	u8 large_motor{0};
 	u8 small_motor{0};
+	bool new_output_data{true};
+	steady_clock::time_point last_output;
 	std::set<u64> trigger_code_left{};
 	std::set<u64> trigger_code_right{};
 	std::array<std::set<u64>, 4> axis_code_left{};
 	std::array<std::set<u64>, 4> axis_code_right{};
+
+	struct color
+	{
+		u8 r{};
+		u8 g{};
+		u8 b{};
+	};
+	color color_override{};
+	bool color_override_active{};
+
+	std::shared_ptr<FusionAhrs> ahrs; // Used to calculate quaternions from sensor data
+	u64 last_ahrs_update_time_us = 0; // Last ahrs update
+
+	void update_orientation(ps_move_data& move_data);
+	void reset_orientation();
 };
 
 struct pad_ensemble
@@ -68,6 +94,13 @@ public:
 		disconnected
 	};
 
+	enum class trigger_recognition_mode
+	{
+		any,             // Add all trigger modes to the button map
+		one_directional, // Treat trigger axis as one-directional only
+		two_directional  // Treat trigger axis as two-directional only (similar to sticks)
+	};
+
 protected:
 	enum button
 	{
@@ -106,18 +139,24 @@ protected:
 		skateboard_tilt_right,
 
 		pressure_intensity_button,
+		analog_limiter_button,
+		orientation_reset_button,
 
 		button_count
 	};
 
 	static constexpr u32 MAX_GAMEPADS = 7;
+	static constexpr u16 button_press_threshold = 50;
+	static constexpr u16 touch_threshold = static_cast<u16>(255 * 0.9f);
+	static constexpr auto min_output_interval = 300ms;
 
 	std::array<bool, MAX_GAMEPADS> last_connection_status{{ false, false, false, false, false, false, false }};
 
 	std::string m_name_string;
 	usz m_max_devices = 0;
-	int m_trigger_threshold = 0;
-	int m_thumb_threshold = 0;
+	u32 m_trigger_threshold = 0;
+	u32 m_thumb_threshold = 0;
+	trigger_recognition_mode m_trigger_recognition_mode = trigger_recognition_mode::any;
 
 	bool b_has_led = false;
 	bool b_has_rgb = false;
@@ -129,10 +168,16 @@ protected:
 	bool b_has_motion = false;
 	bool b_has_config = false;
 	bool b_has_pressure_intensity_button = true;
+	bool b_has_analog_limiter_button = true;
+	bool b_has_orientation = false;
+
 	std::array<cfg_pad, MAX_GAMEPADS> m_pad_configs;
 	std::vector<pad_ensemble> m_bindings;
 	std::unordered_map<u32, std::string> button_list;
+	std::unordered_map<u32, u16> min_button_values;
 	std::set<u32> blacklist;
+
+	std::shared_ptr<Pad> m_pad_for_pad_settings;
 
 	static std::set<u32> narrow_set(const std::set<u64>& src);
 
@@ -228,6 +273,7 @@ protected:
 
 	// get clamped value between 0 and 255
 	static u16 Clamp0To255(f32 input);
+
 	// get clamped value between 0 and 1023
 	static u16 Clamp0To1023(f32 input);
 
@@ -238,7 +284,7 @@ protected:
 	// using a simple scale/sensitivity increase would *work* although it eats a chunk of our usable range in exchange
 	// this might be the best for now, in practice it seems to push the corners to max of 20x20, with a squircle_factor of 8000
 	// This function assumes inX and inY is already in 0-255
-	static std::tuple<u16, u16> ConvertToSquirclePoint(u16 inX, u16 inY, u32 squircle_factor);
+	static void ConvertToSquirclePoint(u16& inX, u16& inY, u32 squircle_factor);
 
 public:
 	// u32 thumb_min = 0; // Unused. Make sure all handlers report 0+ values for sticks in get_button_values.
@@ -249,6 +295,14 @@ public:
 
 	pad_handler m_type;
 	bool m_is_init = false;
+
+	enum class gui_call_type
+	{
+		normal,
+		get_connection,
+		reset_input,
+		blacklist
+	};
 
 	std::vector<pad_ensemble>& bindings() { return m_bindings; }
 	std::string name_string() const { return m_name_string; }
@@ -263,9 +317,12 @@ public:
 	bool has_battery() const { return b_has_battery; }
 	bool has_battery_led() const { return b_has_battery_led; }
 	bool has_pressure_intensity_button() const { return b_has_pressure_intensity_button; }
+	bool has_analog_limiter_button() const { return b_has_analog_limiter_button; }
+	bool has_orientation() const { return b_has_orientation; }
 
 	u16 NormalizeStickInput(u16 raw_value, s32 threshold, s32 multiplier, bool ignore_threshold = false) const;
 	void convert_stick_values(u16& x_out, u16& y_out, s32 x_in, s32 y_in, u32 deadzone, u32 anti_deadzone, u32 padsquircling) const;
+	void set_trigger_recognition_mode(trigger_recognition_mode mode) { m_trigger_recognition_mode = mode; }
 
 	virtual bool Init() { return true; }
 	PadHandlerBase(pad_handler type = pad_handler::null);
@@ -280,9 +337,21 @@ public:
 	// Binds a Pad to a device
 	virtual bool bindPadToDevice(std::shared_ptr<Pad> pad);
 	virtual void init_config(cfg_pad* cfg) = 0;
-	virtual connection get_next_button_press(const std::string& padId, const pad_callback& callback, const pad_fail_callback& fail_callback, bool get_blacklist, const std::vector<std::string>& buttons = {});
+	virtual connection get_next_button_press(const std::string& padId, const pad_callback& callback, const pad_fail_callback& fail_callback, gui_call_type call_type, const std::vector<std::string>& buttons);
 	virtual void get_motion_sensors(const std::string& pad_id, const motion_callback& callback, const motion_fail_callback& fail_callback, motion_preview_values preview_values, const std::array<AnalogSensor, 4>& sensors);
 	virtual std::unordered_map<u32, std::string> get_motion_axis_list() const { return {}; }
+
+	static constexpr f32 PI = 3.14159265f;
+
+	static f32 degree_to_rad(f32 degree)
+	{
+		return degree * PI / 180.0f;
+	}
+
+	static f32 rad_to_degree(f32 radians)
+	{
+		return radians * 180.0f / PI;
+	};
 
 private:
 	virtual std::shared_ptr<PadDevice> get_device(const std::string& /*device*/) { return nullptr; }
@@ -290,16 +359,22 @@ private:
 	virtual bool get_is_right_trigger(const std::shared_ptr<PadDevice>& /*device*/, u64 /*keyCode*/) { return false; }
 	virtual bool get_is_left_stick(const std::shared_ptr<PadDevice>& /*device*/, u64 /*keyCode*/) { return false; }
 	virtual bool get_is_right_stick(const std::shared_ptr<PadDevice>& /*device*/, u64 /*keyCode*/) { return false; }
+	virtual bool get_is_touch_pad_motion(const std::shared_ptr<PadDevice>& /*device*/, u64 /*keyCode*/) { return false; }
 	virtual PadHandlerBase::connection update_connection(const std::shared_ptr<PadDevice>& /*device*/) { return connection::disconnected; }
 	virtual void get_extended_info(const pad_ensemble& /*binding*/) {}
 	virtual void apply_pad_data(const pad_ensemble& /*binding*/) {}
 	virtual std::unordered_map<u64, u16> get_button_values(const std::shared_ptr<PadDevice>& /*device*/) { return {}; }
 	virtual pad_preview_values get_preview_values(const std::unordered_map<u64, u16>& /*data*/) { return {}; }
 
+	void get_orientation(const pad_ensemble& binding) const;
+
 protected:
 	virtual std::array<std::set<u32>, PadHandlerBase::button::button_count> get_mapped_key_codes(const std::shared_ptr<PadDevice>& device, const cfg_pad* cfg);
 	virtual void get_mapping(const pad_ensemble& binding);
-	void TranslateButtonPress(const std::shared_ptr<PadDevice>& device, u64 keyCode, bool& pressed, u16& val, bool ignore_stick_threshold = false, bool ignore_trigger_threshold = false);
+	void TranslateButtonPress(const std::shared_ptr<PadDevice>& device, u64 keyCode, bool& pressed, u16& val, bool use_stick_multipliers, bool ignore_stick_threshold = false, bool ignore_trigger_threshold = false);
 	void init_configs();
 	cfg_pad* get_config(const std::string& pad_id);
+
+	static void set_raw_orientation(ps_move_data& move_data, f32 accel_x, f32 accel_y, f32 accel_z, f32 gyro_x, f32 gyro_y, f32 gyro_z);
+	static void set_raw_orientation(Pad& pad);
 };

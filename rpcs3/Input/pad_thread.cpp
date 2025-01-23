@@ -5,6 +5,7 @@
 #include "ds4_pad_handler.h"
 #include "dualsense_pad_handler.h"
 #include "skateboard_pad_handler.h"
+#include "ps_move_handler.h"
 #ifdef _WIN32
 #include "xinput_pad_handler.h"
 #include "mm_joystick_handler.h"
@@ -16,6 +17,7 @@
 #endif
 #include "keyboard_pad_handler.h"
 #include "Emu/Io/Null/NullPadHandler.h"
+#include "Emu/Io/interception.h"
 #include "Emu/Io/PadHandler.h"
 #include "Emu/Io/pad_config.h"
 #include "Emu/System.h"
@@ -35,12 +37,13 @@ extern std::string g_input_config_override;
 
 namespace pad
 {
-	atomic_t<pad_thread*> g_current = nullptr;
+	atomic_t<pad_thread*> g_pad_thread = nullptr;
 	shared_mutex g_pad_mutex;
 	std::string g_title_id;
 	atomic_t<bool> g_started{false};
 	atomic_t<bool> g_reset{false};
 	atomic_t<bool> g_enabled{true};
+	atomic_t<bool> g_home_menu_requested{false};
 }
 
 namespace rsx
@@ -53,19 +56,22 @@ struct pad_setting
 	u32 port_status = 0;
 	u32 device_capability = 0;
 	u32 device_type = 0;
+	u32 class_type = 0;
+	u16 vendor_id = 0;
+	u16 product_id = 0;
 	bool is_ldd_pad = false;
 };
 
 pad_thread::pad_thread(void* curthread, void* curwindow, std::string_view title_id) : m_curthread(curthread), m_curwindow(curwindow)
 {
 	pad::g_title_id = title_id;
-	pad::g_current = this;
+	pad::g_pad_thread = this;
 	pad::g_started = false;
 }
 
 pad_thread::~pad_thread()
 {
-	pad::g_current = nullptr;
+	pad::g_pad_thread = nullptr;
 }
 
 void pad_thread::Init()
@@ -83,6 +89,9 @@ void pad_thread::Init()
 				m_pads[i]->m_port_status,
 				m_pads[i]->m_device_capability,
 				m_pads[i]->m_device_type,
+				m_pads[i]->m_class_type,
+				m_pads[i]->m_vendor_id,
+				m_pads[i]->m_product_id,
 				m_pads[i]->ldd
 			};
 		}
@@ -93,6 +102,9 @@ void pad_thread::Init()
 				CELL_PAD_STATUS_DISCONNECTED,
 				CELL_PAD_CAPABILITY_PS3_CONFORMITY | CELL_PAD_CAPABILITY_PRESS_MODE | CELL_PAD_CAPABILITY_ACTUATOR,
 				CELL_PAD_DEV_TYPE_STANDARD,
+				CELL_PAD_PCLASS_TYPE_STANDARD,
+				0,
+				0,
 				false
 			};
 		}
@@ -171,7 +183,8 @@ void pad_thread::Init()
 		}
 		cur_pad_handler->Init();
 
-		m_pads[i] = std::make_shared<Pad>(handler_type, i, CELL_PAD_STATUS_DISCONNECTED, pad_settings[i].device_capability, pad_settings[i].device_type);
+		std::shared_ptr<Pad> pad = std::make_shared<Pad>(handler_type, i, CELL_PAD_STATUS_DISCONNECTED, pad_settings[i].device_capability, pad_settings[i].device_type);
+		m_pads[i] = pad;
 
 		if (pad_settings[i].is_ldd_pad)
 		{
@@ -179,21 +192,35 @@ void pad_thread::Init()
 		}
 		else
 		{
-			if (!cur_pad_handler->bindPadToDevice(m_pads[i]))
+			if (!cur_pad_handler->bindPadToDevice(pad))
 			{
 				// Failed to bind the device to cur_pad_handler so binds to NullPadHandler
 				input_log.error("Failed to bind device '%s' to handler %s. Falling back to NullPadHandler.", cfg->device.to_string(), handler_type);
-				nullpad->bindPadToDevice(m_pads[i]);
+				nullpad->bindPadToDevice(pad);
 			}
 
 			input_log.notice("Pad %d: device='%s', handler=%s, VID=0x%x, PID=0x%x, class_type=0x%x, class_profile=0x%x",
-				i, cfg->device.to_string(), m_pads[i]->m_pad_handler, m_pads[i]->m_vendor_id, m_pads[i]->m_product_id, m_pads[i]->m_class_type, m_pads[i]->m_class_profile);
+				i, cfg->device.to_string(), pad->m_pad_handler, pad->m_vendor_id, pad->m_product_id, pad->m_class_type, pad->m_class_profile);
+
+			if (pad->m_pad_handler != pad_handler::null)
+			{
+				input_log.notice("Pad %d: config=\n%s", i, cfg->to_string());
+			}
+
+			// If the user changes the emulated controller, then simulate unplugging and plugging in a new controller
+			if (m_pads_connected[i] && (pad_settings[i].class_type != pad->m_class_type || pad_settings[i].vendor_id != pad->m_vendor_id || pad_settings[i].product_id != pad->m_product_id))
+			{
+				pad->m_disconnection_timer = get_system_time() + 30'000ull;
+			}
 		}
 
-		m_pads[i]->is_fake_pad = (g_cfg.io.move == move_handler::fake && i >= (static_cast<u32>(CELL_PAD_MAX_PORT_NUM) - static_cast<u32>(CELL_GEM_MAX_NUM)))
-			|| (m_pads[i]->m_class_type >= CELL_PAD_FAKE_TYPE_FIRST && m_pads[i]->m_class_type < CELL_PAD_FAKE_TYPE_LAST);
-		connect_usb_controller(i, input::get_product_by_vid_pid(m_pads[i]->m_vendor_id, m_pads[i]->m_product_id));
+		pad->is_fake_pad = ((g_cfg.io.move == move_handler::real || g_cfg.io.move == move_handler::fake) && i >= (static_cast<u32>(CELL_PAD_MAX_PORT_NUM) - static_cast<u32>(CELL_GEM_MAX_NUM)))
+			|| (pad->m_class_type >= CELL_PAD_FAKE_TYPE_FIRST && pad->m_class_type < CELL_PAD_FAKE_TYPE_LAST);
+		connect_usb_controller(i, input::get_product_by_vid_pid(pad->m_vendor_id, pad->m_product_id));
 	}
+
+	// Initialize active mouse and keyboard. Activate pad handler if one exists.
+	input::set_mouse_and_keyboard(m_handlers.contains(pad_handler::keyboard) ? input::active_mouse_and_keyboard::pad : input::active_mouse_and_keyboard::emulated);
 }
 
 void pad_thread::SetRumble(const u32 pad, u8 large_motor, bool small_motor)
@@ -201,11 +228,8 @@ void pad_thread::SetRumble(const u32 pad, u8 large_motor, bool small_motor)
 	if (pad >= m_pads.size())
 		return;
 
-	if (m_pads[pad]->m_vibrateMotors.size() >= 2)
-	{
-		m_pads[pad]->m_vibrateMotors[0].m_value = large_motor;
-		m_pads[pad]->m_vibrateMotors[1].m_value = small_motor ? 255 : 0;
-	}
+	m_pads[pad]->m_vibrateMotors[0].m_value = large_motor;
+	m_pads[pad]->m_vibrateMotors[1].m_value = small_motor ? 255 : 0;
 }
 
 void pad_thread::SetIntercepted(bool intercepted)
@@ -226,6 +250,25 @@ void pad_thread::update_pad_states()
 	for (usz i = 0; i < m_pads.size(); i++)
 	{
 		const auto& pad = m_pads[i];
+
+		// Simulate unplugging and plugging in a new controller
+		if (pad && pad->m_disconnection_timer > 0)
+		{
+			const bool is_connected = pad->m_port_status & CELL_PAD_STATUS_CONNECTED;
+			const u64 now = get_system_time();
+
+			if (is_connected && now < pad->m_disconnection_timer)
+			{
+				pad->m_port_status &= ~CELL_PAD_STATUS_CONNECTED;
+				pad->m_port_status |= CELL_PAD_STATUS_ASSIGN_CHANGES;
+			}
+			else if (!is_connected && now >= pad->m_disconnection_timer)
+			{
+				pad->m_port_status |= CELL_PAD_STATUS_CONNECTED + CELL_PAD_STATUS_ASSIGN_CHANGES;
+				pad->m_disconnection_timer = 0;
+			}
+		}
+
 		const bool connected = pad && !pad->is_fake_pad && !!(pad->m_port_status & CELL_PAD_STATUS_CONNECTED);
 
 		if (m_pads_connected[i] == connected)
@@ -441,7 +484,7 @@ void pad_thread::operator()()
 			}
 
 			// Make sure we call this function only once per button press
-			if (ps_button_pressed && !m_ps_button_pressed)
+			if ((ps_button_pressed && !m_ps_button_pressed) || pad::g_home_menu_requested.exchange(false))
 			{
 				open_home_menu();
 			}
@@ -594,6 +637,8 @@ void pad_thread::UnregisterLddPad(u32 handle)
 	ensure(handle < m_pads.size());
 
 	m_pads[handle]->ldd = false;
+	m_pads[handle]->m_port_status &= ~CELL_PAD_STATUS_CONNECTED;
+	m_pads[handle]->m_port_status |= CELL_PAD_STATUS_ASSIGN_CHANGES;
 
 	num_ldd_pad--;
 }
@@ -614,6 +659,8 @@ std::shared_ptr<PadHandlerBase> pad_thread::GetHandler(pad_handler type)
 		return std::make_shared<dualsense_pad_handler>();
 	case pad_handler::skateboard:
 		return std::make_shared<skateboard_pad_handler>();
+	case pad_handler::move:
+		return std::make_shared<ps_move_handler>();
 #ifdef _WIN32
 	case pad_handler::xinput:
 		return std::make_shared<xinput_pad_handler>();

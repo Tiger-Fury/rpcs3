@@ -146,8 +146,11 @@ enum
 	CELL_PAD_PCLASS_TYPE_SKATEBOARD = 0x8001,
 
 	// these are used together with pad->is_fake_pad to capture input events for usbd/gem/move without conflicting with cellPad
-	CELL_PAD_FAKE_TYPE_FIRST        = 0xa000,
-	CELL_PAD_FAKE_TYPE_GUNCON3      = 0xa000,
+	CELL_PAD_FAKE_TYPE_FIRST               = 0xa000,
+	CELL_PAD_FAKE_TYPE_GUNCON3             = 0xa000,
+	CELL_PAD_FAKE_TYPE_TOP_SHOT_ELITE      = 0xa001,
+	CELL_PAD_FAKE_TYPE_TOP_SHOT_FEARMASTER = 0xa002,
+	CELL_PAD_FAKE_TYPE_GAMETABLET          = 0xa003,
 	CELL_PAD_FAKE_TYPE_LAST,
 
 	CELL_PAD_PCLASS_TYPE_MAX // last item
@@ -334,8 +337,9 @@ struct CellPadData
 	be_t<u16> button[CELL_PAD_MAX_CODES];
 };
 
+static constexpr u16 MOTION_ONE_G = 113;
 static constexpr u16 DEFAULT_MOTION_X = 512;
-static constexpr u16 DEFAULT_MOTION_Y = 399;
+static constexpr u16 DEFAULT_MOTION_Y = 399; // 512 - 113 (113 is 1G gravity)
 static constexpr u16 DEFAULT_MOTION_Z = 512;
 static constexpr u16 DEFAULT_MOTION_G = 512;
 
@@ -360,7 +364,9 @@ constexpr u32 special_button_offset = 666; // Must not conflict with other CELL 
 
 enum special_button_value
 {
-	pressure_intensity
+	pressure_intensity,
+	analog_limiter,
+	orientation_reset
 };
 
 struct Button
@@ -413,6 +419,7 @@ struct AnalogStick
 	std::map<u32, u16> m_pressed_keys_min{}; // only used in keyboard_pad_handler
 	std::map<u32, u16> m_pressed_keys_max{}; // only used in keyboard_pad_handler
 
+	AnalogStick() {}
 	AnalogStick(u32 offset, std::set<u32> key_codes_min, std::set<u32> key_codes_max)
 		: m_offset(offset)
 		, m_key_codes_min(std::move(key_codes_min))
@@ -443,10 +450,43 @@ struct VibrateMotor
 	bool m_is_large_motor = false;
 	u8 m_value = 0;
 
+	VibrateMotor() {}
 	VibrateMotor(bool is_large_motor, u8 value)
 		: m_is_large_motor(is_large_motor)
 		, m_value(value)
 	{}
+};
+
+struct ps_move_data
+{
+	bool external_device_connected = false;
+	u32 external_device_id = 0;
+	std::array<u8, 5> external_device_data{};
+	std::array<u8, 38> external_device_read{};  // CELL_GEM_EXTERNAL_PORT_DEVICE_INFO_SIZE
+	std::array<u8, 40> external_device_write{}; // CELL_GEM_EXTERNAL_PORT_OUTPUT_SIZE
+	bool external_device_read_requested = false;
+	bool external_device_write_requested = false;
+
+	bool calibration_requested = false;
+	bool calibration_succeeded = false;
+
+	bool magnetometer_enabled = false;
+	bool orientation_enabled = false;
+
+	static constexpr std::array<f32, 4> default_quaternion { 1.0f, 0.0f, 0.0f, 0.0f };
+	std::array<f32, 4> quaternion = default_quaternion; // quaternion orientation (x,y,z,w) of controller relative to default (facing the camera with buttons up)
+	f32 accelerometer_x = 0.0f; // linear velocity in m/s²
+	f32 accelerometer_y = 0.0f; // linear velocity in m/s²
+	f32 accelerometer_z = 0.0f; // linear velocity in m/s²
+	f32 gyro_x = 0.0f; // angular velocity in rad/s
+	f32 gyro_y = 0.0f; // angular velocity in rad/s
+	f32 gyro_z = 0.0f; // angular velocity in rad/s
+	f32 magnetometer_x = 0.0f;
+	f32 magnetometer_y = 0.0f;
+	f32 magnetometer_z = 0.0f;
+	s16 temperature = 0;
+
+	void reset_sensors();
 };
 
 struct Pad
@@ -464,12 +504,23 @@ struct Pad
 	u16 m_vendor_id{0};
 	u16 m_product_id{0};
 
+	u64 m_disconnection_timer{0};
+
 	s32 m_pressure_intensity_button_index{-1}; // Special button index. -1 if not set.
 	bool m_pressure_intensity_button_pressed{}; // Last sensitivity button press state, used for toggle.
 	bool m_pressure_intensity_toggled{}; // Whether the sensitivity is toggled on or off.
 	u8 m_pressure_intensity{127}; // 0-255
 	bool m_adjust_pressure_last{}; // only used in keyboard_pad_handler
 	bool get_pressure_intensity_button_active(bool is_toggle_mode, u32 player_id);
+
+	s32 m_analog_limiter_button_index{-1}; // Special button index. -1 if not set.
+	bool m_analog_limiter_button_pressed{}; // Last sensitivity button press state, used for toggle.
+	bool m_analog_limiter_toggled{}; // Whether the sensitivity is toggled on or off.
+	bool m_analog_limiter_enabled_last{}; // only used in keyboard_pad_handler
+	bool get_analog_limiter_button_active(bool is_toggle_mode, u32 player_id);
+
+	s32 m_orientation_reset_button_index{-1}; // Special button index. -1 if not set.
+	bool get_orientation_reset_button_active();
 
 	// Cable State:   0 - 1  plugged in ?
 	u8 m_cable_state{0};
@@ -479,9 +530,9 @@ struct Pad
 	u8 m_battery_level{0};
 
 	std::vector<Button> m_buttons;
-	std::vector<AnalogStick> m_sticks;
-	std::vector<AnalogSensor> m_sensors;
-	std::vector<VibrateMotor> m_vibrateMotors;
+	std::array<AnalogStick, 4> m_sticks{};
+	std::array<AnalogSensor, 4> m_sensors{};
+	std::array<VibrateMotor, 2> m_vibrateMotors{};
 
 	// These hold bits for their respective buttons
 	u16 m_digital_1{0};
@@ -507,7 +558,6 @@ struct Pad
 	u16 m_press_R2{0};
 
 	// Except for these...0-1023
-	// ~399 on sensor y is a level non moving controller
 	u16 m_sensor_x{DEFAULT_MOTION_X};
 	u16 m_sensor_y{DEFAULT_MOTION_Y};
 	u16 m_sensor_z{DEFAULT_MOTION_Z};
@@ -517,6 +567,8 @@ struct Pad
 	CellPadData ldd_data{};
 
 	bool is_fake_pad = false;
+
+	ps_move_data move_data{};
 
 	explicit Pad(pad_handler handler, u32 player_id, u32 port_status, u32 device_capability, u32 device_type)
 		: m_pad_handler(handler)

@@ -14,6 +14,7 @@ public:
 	virtual ~GSFrameBase() = default;
 
 	virtual void close() = 0;
+	virtual void reset() = 0;
 	virtual bool shown() = 0;
 	virtual void hide() = 0;
 	virtual void show() = 0;
@@ -25,6 +26,8 @@ public:
 	virtual void flip(draw_context_t ctx, bool skip_frame = false) = 0;
 	virtual int client_width() = 0;
 	virtual int client_height() = 0;
+	virtual f64 client_display_rate() = 0;
+	virtual bool has_alpha() = 0;
 
 	virtual display_handle_t handle() const = 0;
 

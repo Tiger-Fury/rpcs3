@@ -382,22 +382,26 @@ namespace rsx
 			return false;
 		}
 
-		void filter(std::predicate<const Ty&> auto predicate)
+		bool erase_if(std::predicate<const Ty&> auto predicate)
 		{
 			if (!_size)
 			{
-				return;
+				return false;
 			}
 
+			bool ret = false;
 			for (auto ptr = _data, last = _data + _size - 1; ptr < last; ptr++)
 			{
-				if (!predicate(*ptr))
+				if (predicate(*ptr))
 				{
 					// Move item to the end of the list and shrink by 1
 					std::memcpy(ptr, last, sizeof(Ty));
 					last = _data + (--_size);
+					ret = true;
 				}
 			}
+
+			return ret;
 		}
 
 		void sort(std::predicate<const Ty&, const Ty&> auto predicate)
@@ -422,6 +426,18 @@ namespace rsx
 				result.push_back(xform(*it));
 			}
 			return result;
+		}
+
+		template <typename F, typename U>
+			requires std::is_invocable_r_v<U, F, const U&, const Ty&>
+		U reduce(U initial_value, F&& reducer) const
+		{
+			U accumulate = initial_value;
+			for (auto it = begin(); it != end(); ++it)
+			{
+				accumulate = reducer(accumulate, *it);
+			}
+			return accumulate;
 		}
 	};
 }

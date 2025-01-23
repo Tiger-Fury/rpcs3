@@ -120,6 +120,7 @@ void headless_application::InitializeCallbacks()
 		return nullptr;
 	};
 
+	callbacks.close_gs_frame = [](){};
 	callbacks.get_gs_frame = []() -> std::unique_ptr<GSFrameBase>
 	{
 		if (g_cfg.video.renderer != video_renderer::null)
@@ -155,12 +156,13 @@ void headless_application::InitializeCallbacks()
 	callbacks.enable_disc_eject  = [](bool) {};
 	callbacks.enable_disc_insert = [](bool) {};
 
-	callbacks.on_missing_fw = []() { return false; };
+	callbacks.on_missing_fw = []() {};
 
 	callbacks.handle_taskbar_progress = [](s32, s32) {};
 
 	callbacks.get_localized_string    = [](localized_string_id, const char*) -> std::string { return {}; };
 	callbacks.get_localized_u32string = [](localized_string_id, const char*) -> std::u32string { return {}; };
+	callbacks.get_localized_setting   = [](const cfg::_base*, u32) -> std::string { return {}; };
 
 	callbacks.play_sound = [](const std::string&){};
 	callbacks.add_breakpoint = [](u32 /*addr*/){};

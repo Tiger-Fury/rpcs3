@@ -7,20 +7,30 @@
 
 inline void try_start(spu_thread& spu)
 {
-	reader_lock lock(spu.run_ctrl_mtx);
+	bool notify = false;
 
-	if (spu.status_npc.fetch_op([](spu_thread::status_npc_sync_var& value)
+	if (~spu.status_npc.load().status & SPU_STATUS_RUNNING)
 	{
-		if (value.status & SPU_STATUS_RUNNING)
+		reader_lock lock(spu.run_ctrl_mtx);
+
+		if (spu.status_npc.fetch_op([](spu_thread::status_npc_sync_var& value)
 		{
-			return false;
-		}
+			if (value.status & SPU_STATUS_RUNNING)
+			{
+				return false;
+			}
 
-		value.status = SPU_STATUS_RUNNING | (value.status & SPU_STATUS_IS_ISOLATED);
-		return true;
-	}).second)
+			value.status = SPU_STATUS_RUNNING | (value.status & SPU_STATUS_IS_ISOLATED);
+			return true;
+		}).second)
+		{
+			spu.state -= cpu_flag::stop;
+			notify = true;
+		}
+	}
+
+	if (notify)
 	{
-		spu.state -= cpu_flag::stop;
 		spu.state.notify_one();
 	}
 };
@@ -244,7 +254,14 @@ bool spu_thread::write_reg(const u32 addr, const u32 value)
 
 	case SPU_In_MBox_offs:
 	{
-		ch_in_mbox.push(value);
+		if (!ch_in_mbox.push(value).op_done)
+		{
+			if (auto cpu = cpu_thread::get_current())
+			{
+				cpu->state += cpu_flag::again;
+			}
+		}
+
 		return true;
 	}
 
@@ -385,14 +402,35 @@ void spu_load_exec(const spu_exec_object& elf)
 
 	const auto funcs = spu->discover_functions(0, { spu->ls , SPU_LS_SIZE }, true, umax);
 
-	for (u32 addr : funcs)
+	if (spu_log.notice && !funcs.empty())
 	{
-		spu_log.success("Found SPU function at: 0x%08x", addr);
+		std::string to_log;
+
+		for (usz i = 0; i < funcs.size(); i++)
+		{
+			if (i == 0 && funcs.size() < 4)
+			{
+				// Skip newline in this case
+				to_log += ' ';
+			}
+			else if (i % 4 == 0)
+			{
+				fmt::append(to_log, "\n[%02u] ", i / 8);
+			}
+			else
+			{
+				to_log += ", ";
+			}
+
+			fmt::append(to_log, "0x%05x", funcs[i]);
+		}
+
+		spu_log.notice("Found SPU function(s) at:%s", to_log);
 	}
 
 	if (!funcs.empty())
 	{
-		spu_log.success("Found %u SPU functions", funcs.size());
+		spu_log.success("Found %u SPU function(s)", funcs.size());
 	}
 }
 

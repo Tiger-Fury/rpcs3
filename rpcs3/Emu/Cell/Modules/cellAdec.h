@@ -1,6 +1,8 @@
 #pragma once
 
-#include "Emu/Memory/vm_ptr.h"
+#include "cellPamf.h" // CellCodecTimeStamp
+#include "../lv2/sys_mutex.h"
+#include "../lv2/sys_cond.h"
 
 // Error Codes
 enum CellAdecError : u32
@@ -111,68 +113,6 @@ enum CellAdecError : u32
 	CELL_ADEC_ERROR_AT3_ERROR  = 0x80612180,
 
 
-	CELL_ADEC_ERROR_ATX_OFFSET = 0x80612200,
-	CELL_ADEC_ERROR_ATX_NONE                       = 0x80612200,
-	CELL_ADEC_ERROR_ATX_OK                         = 0x80612200,
-	CELL_ADEC_ERROR_ATX_BUSY                       = 0x80612264,
-	CELL_ADEC_ERROR_ATX_EMPTY                      = 0x80612265,
-	CELL_ADEC_ERROR_ATX_ATSHDR                     = 0x80612266,
-	CELL_ADEC_ERROR_ATX_NON_FATAL                  = 0x80612281,
-	CELL_ADEC_ERROR_ATX_NOT_IMPLE                  = 0x80612282,
-	CELL_ADEC_ERROR_ATX_PACK_CE_OVERFLOW           = 0x80612283,
-	CELL_ADEC_ERROR_ATX_ILLEGAL_NPROCQUS           = 0x80612284,
-	CELL_ADEC_ERROR_ATX_FATAL                      = 0x8061228c,
-	CELL_ADEC_ERROR_ATX_ENC_OVERFLOW               = 0x8061228d,
-	CELL_ADEC_ERROR_ATX_PACK_CE_UNDERFLOW          = 0x8061228e,
-	CELL_ADEC_ERROR_ATX_SYNTAX_IDCT                = 0x8061228f,
-	CELL_ADEC_ERROR_ATX_SYNTAX_GAINADJ             = 0x80612290,
-	CELL_ADEC_ERROR_ATX_SYNTAX_IDSF                = 0x80612291,
-	CELL_ADEC_ERROR_ATX_SYNTAX_SPECTRA             = 0x80612292,
-	CELL_ADEC_ERROR_ATX_SYNTAX_IDWL	               = 0x80612293,
-	CELL_ADEC_ERROR_ATX_SYNTAX_GHWAVE              = 0x80612294,
-	CELL_ADEC_ERROR_ATX_SYNTAX_SHEADER             = 0x80612295,
-	CELL_ADEC_ERROR_ATX_SYNTAX_IDWL_A              = 0x80612296,
-	CELL_ADEC_ERROR_ATX_SYNTAX_IDWL_B              = 0x80612297,
-	CELL_ADEC_ERROR_ATX_SYNTAX_IDWL_C              = 0x80612298,
-	CELL_ADEC_ERROR_ATX_SYNTAX_IDWL_D              = 0x80612299,
-	CELL_ADEC_ERROR_ATX_SYNTAX_IDWL_E              = 0x8061229a,
-	CELL_ADEC_ERROR_ATX_SYNTAX_IDSF_A              = 0x8061229b,
-	CELL_ADEC_ERROR_ATX_SYNTAX_IDSF_B              = 0x8061229c,
-	CELL_ADEC_ERROR_ATX_SYNTAX_IDSF_C              = 0x8061229d,
-	CELL_ADEC_ERROR_ATX_SYNTAX_IDSF_D              = 0x8061229e,
-	CELL_ADEC_ERROR_ATX_SYNTAX_IDCT_A              = 0x8061229f,
-	CELL_ADEC_ERROR_ATX_SYNTAX_GC_NGC              = 0x806122a0,
-	CELL_ADEC_ERROR_ATX_SYNTAX_GC_IDLEV_A          = 0x806122a1,
-	CELL_ADEC_ERROR_ATX_SYNTAX_GC_IDLOC_A          = 0x806122a2,
-	CELL_ADEC_ERROR_ATX_SYNTAX_GC_IDLEV_B          = 0x806122a3,
-	CELL_ADEC_ERROR_ATX_SYNTAX_GC_IDLOC_B          = 0x806122a4,
-	CELL_ADEC_ERROR_ATX_SYNTAX_SN_NWVS             = 0x806122a5,
-	CELL_ADEC_ERROR_ATX_FATAL_HANDLE               = 0x806122aa,
-	CELL_ADEC_ERROR_ATX_ASSERT_SAMPLING_FREQ       = 0x806122ab,
-	CELL_ADEC_ERROR_ATX_ASSERT_CH_CONFIG_INDEX     = 0x806122ac,
-	CELL_ADEC_ERROR_ATX_ASSERT_NBYTES              = 0x806122ad,
-	CELL_ADEC_ERROR_ATX_ASSERT_BLOCK_NUM           = 0x806122ae,
-	CELL_ADEC_ERROR_ATX_ASSERT_BLOCK_ID            = 0x806122af,
-	CELL_ADEC_ERROR_ATX_ASSERT_CHANNELS            = 0x806122b0,
-	CELL_ADEC_ERROR_ATX_UNINIT_BLOCK_SPECIFIED     = 0x806122b1,
-	CELL_ADEC_ERROR_ATX_POSCFG_PRESENT             = 0x806122b2,
-	CELL_ADEC_ERROR_ATX_BUFFER_OVERFLOW            = 0x806122b3,
-	CELL_ADEC_ERROR_ATX_ILL_BLK_TYPE_ID            = 0x806122b4,
-	CELL_ADEC_ERROR_ATX_UNPACK_CHANNEL_BLK_FAILED  = 0x806122b5,
-	CELL_ADEC_ERROR_ATX_ILL_BLK_ID_USED_1          = 0x806122b6,
-	CELL_ADEC_ERROR_ATX_ILL_BLK_ID_USED_2          = 0x806122b7,
-	CELL_ADEC_ERROR_ATX_ILLEGAL_ENC_SETTING        = 0x806122b8,
-	CELL_ADEC_ERROR_ATX_ILLEGAL_DEC_SETTING        = 0x806122b9,
-	CELL_ADEC_ERROR_ATX_ASSERT_NSAMPLES            = 0x806122ba,
-
-	CELL_ADEC_ERROR_ATX_ILL_SYNCWORD               = 0x806122bb,
-	CELL_ADEC_ERROR_ATX_ILL_SAMPLING_FREQ          = 0x806122bc,
-	CELL_ADEC_ERROR_ATX_ILL_CH_CONFIG_INDEX        = 0x806122bd,
-	CELL_ADEC_ERROR_ATX_RAW_DATA_FRAME_SIZE_OVER   = 0x806122be,
-	CELL_ADEC_ERROR_ATX_SYNTAX_ENHANCE_LENGTH_OVER = 0x806122bf,
-	CELL_ADEC_ERROR_ATX_SPU_INTERNAL_FAIL          = 0x806122c8,
-
-
 	CELL_ADEC_ERROR_LPCM_FATAL = 0x80612001,
 	CELL_ADEC_ERROR_LPCM_SEQ   = 0x80612002,
 	CELL_ADEC_ERROR_LPCM_ARG   = 0x80612003,
@@ -250,47 +190,39 @@ enum CellAdecError : u32
 // Audio Codec Type
 enum AudioCodecType : s32
 {
-	CELL_ADEC_TYPE_RESERVED1,
+	CELL_ADEC_TYPE_INVALID1,
 	CELL_ADEC_TYPE_LPCM_PAMF,
 	CELL_ADEC_TYPE_AC3,
 	CELL_ADEC_TYPE_ATRACX,
 	CELL_ADEC_TYPE_MP3,
 	CELL_ADEC_TYPE_ATRAC3,
 	CELL_ADEC_TYPE_MPEG_L2,
-	CELL_ADEC_TYPE_RESERVED5,
-	CELL_ADEC_TYPE_RESERVED6,
-	CELL_ADEC_TYPE_RESERVED7,
-	CELL_ADEC_TYPE_RESERVED8,
+	CELL_ADEC_TYPE_M2AAC,
+	CELL_ADEC_TYPE_EAC3,
+	CELL_ADEC_TYPE_TRUEHD,
+	CELL_ADEC_TYPE_DTS, // Removed in firmware 4.00, integrated into DTSHD
 	CELL_ADEC_TYPE_CELP,
-	CELL_ADEC_TYPE_RESERVED10,
+	CELL_ADEC_TYPE_LPCM_BLURAY,
 	CELL_ADEC_TYPE_ATRACX_2CH,
 	CELL_ADEC_TYPE_ATRACX_6CH,
 	CELL_ADEC_TYPE_ATRACX_8CH,
 	CELL_ADEC_TYPE_M4AAC,
-	CELL_ADEC_TYPE_RESERVED12,
-	CELL_ADEC_TYPE_RESERVED13,
-	CELL_ADEC_TYPE_RESERVED14,
-	CELL_ADEC_TYPE_RESERVED15,
-	CELL_ADEC_TYPE_RESERVED16,
-	CELL_ADEC_TYPE_RESERVED17,
-	CELL_ADEC_TYPE_RESERVED18,
-	CELL_ADEC_TYPE_RESERVED19,
+	CELL_ADEC_TYPE_LPCM_DVD,
+	CELL_ADEC_TYPE_WMA,
+	CELL_ADEC_TYPE_DTSLBR,
+	CELL_ADEC_TYPE_M4AAC_2CH,
+	CELL_ADEC_TYPE_DTSHD,
+	CELL_ADEC_TYPE_MPEG_L1,
+	CELL_ADEC_TYPE_MP3S,
+	CELL_ADEC_TYPE_M4AAC_2CH_MOD,
 	CELL_ADEC_TYPE_CELP8,
-	CELL_ADEC_TYPE_RESERVED20,
-	CELL_ADEC_TYPE_RESERVED21,
-	CELL_ADEC_TYPE_RESERVED22,
-	CELL_ADEC_TYPE_RESERVED23,
-	CELL_ADEC_TYPE_RESERVED24,
-	CELL_ADEC_TYPE_RESERVED25,
+	CELL_ADEC_TYPE_INVALID2,
+	CELL_ADEC_TYPE_INVALID3,
+	CELL_ADEC_TYPE_RESERVED22, // Either WMA Pro or WMA Lossless, was never released
+	CELL_ADEC_TYPE_RESERVED23, // Either WMA Pro or WMA Lossless, was never released
+	CELL_ADEC_TYPE_DTSHDCORE, // Removed in firmware 4.00, integrated into DTSHD
+	CELL_ADEC_TYPE_ATRAC3MULTI,
 };
-
-inline bool adecIsAtracX(s32 type)
-{
-	return type == CELL_ADEC_TYPE_ATRACX
-		|| type == CELL_ADEC_TYPE_ATRACX_2CH
-		|| type == CELL_ADEC_TYPE_ATRACX_6CH
-		|| type == CELL_ADEC_TYPE_ATRACX_8CH;
-}
 
 // Output Channel Number
 enum CellAdecChannel : s32
@@ -313,13 +245,15 @@ enum CellAdecChannel : s32
 // Sampling Rate
 enum CellAdecSampleRate : s32
 {
-	CELL_ADEC_FS_RESERVED1 = 0,
-	CELL_ADEC_FS_48kHz = 1,
-	CELL_ADEC_FS_16kHz = 2,
-	CELL_ADEC_FS_8kHz = 5,
+	CELL_ADEC_FS_RESERVED1,
+	CELL_ADEC_FS_48kHz,
+	CELL_ADEC_FS_16kHz,
+	CELL_ADEC_FS_96kHz,
+	CELL_ADEC_FS_192kHz,
+	CELL_ADEC_FS_8kHz,
 };
 
-enum CellAdecBitLength : s32
+enum CellAdecBitLength : u32
 {
 	CELL_ADEC_BIT_LENGTH_RESERVED1,
 	CELL_ADEC_BIT_LENGTH_16,
@@ -355,7 +289,14 @@ struct CellAdecResourceEx
 	be_t<u32> ppuThreadPriority;
 	be_t<u32> ppuThreadStackSize;
 	be_t<u32> spurs_addr;
-	u8 priority[8];
+	be_t<u64, 1> priority;
+	be_t<u32> maxContention;
+};
+
+struct CellAdecResourceSpurs
+{
+	be_t<u32> spurs_addr; // CellSpurs*
+	be_t<u64, 1> priority;
 	be_t<u32> maxContention;
 };
 
@@ -368,18 +309,22 @@ enum CellAdecMsgType : s32
 	CELL_ADEC_MSG_TYPE_SEQDONE,
 };
 
-using CellAdecCbMsg = s32(u32 handle, CellAdecMsgType msgType, s32 msgData, u32 cbArg);
+using CellAdecCbMsg = s32(vm::ptr<void> handle, CellAdecMsgType msgType, s32 msgData, vm::ptr<void> cbArg);
 
-struct CellAdecCb
+// Used for internal callbacks as well
+template <typename F>
+struct AdecCb
 {
-	vm::bptr<CellAdecCbMsg> cbFunc;
-	be_t<u32> cbArg;
+	vm::bptr<F> cbFunc;
+	vm::bptr<void> cbArg;
 };
+
+using CellAdecCb = AdecCb<CellAdecCbMsg>;
 
 // AU Info
 struct CellAdecAuInfo
 {
-	be_t<u32> startAddr;
+	vm::bcptr<u8> startAddr;
 	be_t<u32> size;
 	CellCodecTimeStamp pts;
 	be_t<u64> userData;
@@ -388,17 +333,338 @@ struct CellAdecAuInfo
 // BSI Info
 struct CellAdecPcmAttr
 {
-	be_t<u32> bsiInfo_addr;
+	vm::bptr<void> bsiInfo;
 };
 
 struct CellAdecPcmItem
 {
-	be_t<u32> pcmHandle;
+	be_t<s32> pcmHandle;
 	be_t<u32> status;
-	be_t<u32> startAddr;
+	vm::bcptr<void> startAddr;
 	be_t<u32> size;
 	CellAdecPcmAttr	pcmAttr;
 	CellAdecAuInfo auInfo;
+};
+
+// Controls how much is added to the presentation time stamp of the previous frame if the game didn't set a pts itself in CellAdecAuInfo when calling cellAdecDecodeAu()
+enum AdecCorrectPtsValueType : s8
+{
+	ADEC_CORRECT_PTS_VALUE_TYPE_UNSPECIFIED = -1,
+
+	// Adds a fixed amount
+	ADEC_CORRECT_PTS_VALUE_TYPE_LPCM_HDMV = 0,
+	ADEC_CORRECT_PTS_VALUE_TYPE_LPCM_DVD = 1, // Unused for some reason, the DVD player probably takes care of timestamps itself
+	ADEC_CORRECT_PTS_VALUE_TYPE_ATRACX_48000Hz = 2,
+	ADEC_CORRECT_PTS_VALUE_TYPE_ATRACX_44100Hz = 3,
+	ADEC_CORRECT_PTS_VALUE_TYPE_ATRACX_32000Hz = 4,
+	ADEC_CORRECT_PTS_VALUE_TYPE_AC3 = 5,
+	ADEC_CORRECT_PTS_VALUE_TYPE_ATRAC3 = 6,
+	ADEC_CORRECT_PTS_VALUE_TYPE_MP3_48000Hz = 7,
+	ADEC_CORRECT_PTS_VALUE_TYPE_MP3_44100Hz = 8,
+	ADEC_CORRECT_PTS_VALUE_TYPE_MP3_32000Hz = 9,
+	ADEC_CORRECT_PTS_VALUE_TYPE_ATRAC3MULTI = 39,
+
+	// Calls a decoder function (_SceAdecCorrectPtsValue_codec())
+	ADEC_CORRECT_PTS_VALUE_TYPE_EAC3 = 17,
+	ADEC_CORRECT_PTS_VALUE_TYPE_DTSHD = 21,
+	ADEC_CORRECT_PTS_VALUE_TYPE_CELP = 24,
+	ADEC_CORRECT_PTS_VALUE_TYPE_M2AAC = 25,
+	ADEC_CORRECT_PTS_VALUE_TYPE_MPEG_L2 = 26,
+	ADEC_CORRECT_PTS_VALUE_TYPE_TRUEHD = 27,
+	ADEC_CORRECT_PTS_VALUE_TYPE_DTS = 28,
+	ADEC_CORRECT_PTS_VALUE_TYPE_M4AAC = 29,
+	ADEC_CORRECT_PTS_VALUE_TYPE_WMA = 30,
+	ADEC_CORRECT_PTS_VALUE_TYPE_DTSLBR = 31,
+	ADEC_CORRECT_PTS_VALUE_TYPE_MPEG_L1 = 32,
+	ADEC_CORRECT_PTS_VALUE_TYPE_MP3S = 33,
+	ADEC_CORRECT_PTS_VALUE_TYPE_CELP8 = 34,
+	ADEC_CORRECT_PTS_VALUE_TYPE_WMAPRO = 35,
+	ADEC_CORRECT_PTS_VALUE_TYPE_WMALSL = 36,
+	ADEC_CORRECT_PTS_VALUE_TYPE_DTSHDCORE_UNK1 = 37,
+	ADEC_CORRECT_PTS_VALUE_TYPE_DTSHDCORE_UNK2 = 38,
+};
+
+// Internal callbacks
+using AdecNotifyAuDone = error_code(s32 pcmHandle, vm::ptr<void> cbArg);
+using AdecNotifyPcmOut = error_code(s32 pcmHandle, vm::ptr<void> pcmAddr, u32 pcmSize, vm::ptr<void> cbArg, vm::cpptr<void> bsiInfo, AdecCorrectPtsValueType correctPtsValueType, s32 errorCode);
+using AdecNotifyError = error_code(s32 errorCode, vm::ptr<void> cbArg);
+using AdecNotifySeqDone = error_code(vm::ptr<void> cbArg);
+
+// Decoder functions
+using CellAdecCoreOpGetMemSize = error_code(vm::ptr<CellAdecAttr> attr);
+using CellAdecCoreOpOpen = error_code(vm::ptr<void> coreHandle, vm::ptr<AdecNotifyAuDone> cbFuncAuDone, vm::ptr<void> cbArgAuDone, vm::ptr<AdecNotifyPcmOut> cbFuncPcmOut, vm::ptr<void> cbArgPcmOut,
+	vm::ptr<AdecNotifyError> cbFuncError, vm::ptr<void> cbArgError, vm::ptr<AdecNotifySeqDone> cbFuncSeqDone, vm::ptr<void> cbArgSeqDone, vm::cptr<CellAdecResource> res);
+using CellAdecCoreOpClose = error_code(vm::ptr<void> coreHandle);
+using CellAdecCoreOpStartSeq = error_code(vm::ptr<void> coreHandle, vm::cptr<void> param);
+using CellAdecCoreOpEndSeq = error_code(vm::ptr<void> coreHandle);
+using CellAdecCoreOpDecodeAu = error_code(vm::ptr<void> coreHandle, s32 pcmHandle, vm::cptr<CellAdecAuInfo> auInfo);
+using CellAdecCoreOpGetVersion = void(vm::ptr<be_t<u32, 1>> version);
+using CellAdecCoreOpRealign = error_code(vm::ptr<void> coreHandle, vm::ptr<void> outBuffer, vm::cptr<void> pcmStartAddr);
+using CellAdecCoreOpReleasePcm = error_code(vm::ptr<void> coreHandle, s32 pcmHandle, vm::cptr<void> outBuffer);
+using CellAdecCoreOpGetPcmHandleNum = s32();
+using CellAdecCoreOpGetBsiInfoSize = u32();
+using CellAdecCoreOpOpenExt = error_code(vm::ptr<void> coreHandle, vm::ptr<AdecNotifyAuDone> cbFuncAuDone, vm::ptr<void> cbArgAuDone, vm::ptr<AdecNotifyPcmOut> cbFuncPcmOut, vm::ptr<void> cbArgPcmOut,
+	vm::ptr<AdecNotifyError> cbFuncError, vm::ptr<void> cbArgError, vm::ptr<AdecNotifySeqDone> cbFuncSeqDone, vm::ptr<void> cbArgSeqDone, vm::cptr<CellAdecResource> res, vm::cptr<CellAdecResourceSpurs> spursRes);
+
+// Decoders export a pointer to this struct
+struct CellAdecCoreOps
+{
+	vm::bptr<CellAdecCoreOpGetMemSize> getMemSize;
+	vm::bptr<CellAdecCoreOpOpen> open;
+	vm::bptr<CellAdecCoreOpClose> close;
+	vm::bptr<CellAdecCoreOpStartSeq> startSeq;
+	vm::bptr<CellAdecCoreOpEndSeq> endSeq;
+	vm::bptr<CellAdecCoreOpDecodeAu> decodeAu;
+	vm::bptr<CellAdecCoreOpGetVersion> getVersion;
+	vm::bptr<CellAdecCoreOpRealign> realign;
+	vm::bptr<CellAdecCoreOpReleasePcm> releasePcm;
+	vm::bptr<CellAdecCoreOpGetPcmHandleNum> getPcmHandleNum;
+	vm::bptr<CellAdecCoreOpGetBsiInfoSize> getBsiInfoSize;
+	vm::bptr<CellAdecCoreOpOpenExt> openExt;
+};
+
+// Used by several decoders as command queue
+template <typename T>
+struct AdecCmdQueue
+{
+	T elements[4];
+
+	be_t<s32> front = 0;
+	be_t<s32> back = 0;
+	be_t<s32> size = 0;
+
+	template <bool is_peek = false>
+	void pop(T& cmd)
+	{
+		// LLE returns uninitialized stack memory if the queue is empty
+		cmd = elements[front];
+
+		if constexpr (!is_peek)
+		{
+			elements[front].pcm_handle = 0xff;
+			front = (front + 1) & 3;
+			size--;
+		}
+	}
+
+	void emplace(auto&&... args)
+	{
+		new (&elements[back]) T(std::forward<decltype(args)>(args)...);
+
+		back = (back + 1) & 3;
+		size++;
+	}
+
+	void peek(T& cmd) const { return pop<true>(cmd); }
+	bool empty() const { return size == 0; }
+	bool full() const { return size >= 4; }
+};
+
+struct AdecFrame
+{
+	b8 in_use; // True after issuing a decode command until the frame is consumed
+
+	be_t<s32> this_index; // Set when initialized in cellAdecOpen(), unused afterward
+
+	// Set when the corresponding callback is received, unused afterward
+	b8 au_done;
+	b8 unk1;
+	b8 pcm_out;
+	b8 unk2;
+
+	CellAdecAuInfo au_info;
+	CellAdecPcmItem pcm_item;
+
+	u32 reserved1;
+	u32 reserved2;
+
+	// Frames that are ready to be consumed form a linked list. However, this list is not used (AdecOutputQueue is used instead)
+	be_t<s32> next; // Index of the next frame that can be consumed
+	be_t<s32> prev; // Index of the previous frame that can be consumed
+};
+
+CHECK_SIZE(AdecFrame, 0x68);
+
+class AdecOutputQueue
+{
+	struct entry
+	{
+		be_t<s32> this_index; // Unused
+		be_t<s32> state; // 0xff = empty, 0x10 = filled
+		vm::bptr<CellAdecPcmItem> pcm_item;
+		be_t<s32> pcm_handle;
+	}
+	entries[4];
+
+	be_t<s32> front;
+	be_t<s32> back;
+	be_t<s32> size;
+
+	be_t<u32> mutex; // sys_mutex_t
+	be_t<u32> cond;  // sys_cond_t, unused
+
+public:
+	void init(ppu_thread& ppu, vm::ptr<AdecOutputQueue> _this)
+	{
+		this->front = 0;
+		this->back = 0;
+		this->size = 0;
+
+		const vm::var<sys_mutex_attribute_t> mutex_attr = {{ SYS_SYNC_PRIORITY, SYS_SYNC_NOT_RECURSIVE, SYS_SYNC_NOT_PROCESS_SHARED, SYS_SYNC_NOT_ADAPTIVE, 0, 0, 0, { "_adem07"_u64 } }};
+		ensure(sys_mutex_create(ppu, _this.ptr(&AdecOutputQueue::mutex), mutex_attr) == CELL_OK); // Error code isn't checked on LLE
+
+		const vm::var<sys_cond_attribute_t> cond_attr = {{ SYS_SYNC_NOT_PROCESS_SHARED, 0, 0, { "_adec05"_u64 } }};
+		ensure(sys_cond_create(ppu, _this.ptr(&AdecOutputQueue::cond), mutex, cond_attr) == CELL_OK); // Error code isn't checked on LLE
+
+		for (s32 i = 0; i < 4; i++)
+		{
+			entries[i] = { i, 0xff, vm::null, -1 };
+		}
+	}
+
+	error_code finalize(ppu_thread& ppu) const
+	{
+		if (error_code ret = sys_cond_destroy(ppu, cond); ret != CELL_OK)
+		{
+			return ret;
+		}
+
+		if (error_code ret = sys_mutex_destroy(ppu, mutex); ret != CELL_OK)
+		{
+			return ret;
+		}
+
+		return CELL_OK;
+	}
+
+	error_code push(ppu_thread& ppu, vm::ptr<CellAdecPcmItem> pcm_item, s32 pcm_handle)
+	{
+		ensure(sys_mutex_lock(ppu, mutex, 0) == CELL_OK); // Error code isn't checked on LLE
+
+		if (entries[back].state != 0xff)
+		{
+			ensure(sys_mutex_unlock(ppu, mutex) == CELL_OK); // Error code isn't checked on LLE
+			return true; // LLE returns the result of the comparison above
+		}
+
+		entries[back].state = 0x10;
+		entries[back].pcm_item = pcm_item;
+		entries[back].pcm_handle = pcm_handle;
+
+		back = (back + 1) & 3;
+		size++;
+
+		ensure(sys_mutex_unlock(ppu, mutex) == CELL_OK); // Error code isn't checked on LLE
+		return CELL_OK;
+	}
+
+	const entry* pop(ppu_thread& ppu)
+	{
+		ensure(sys_mutex_lock(ppu, mutex, 0) == CELL_OK); // Error code isn't checked on LLE
+
+		if (ppu.state & cpu_flag::again) // Savestate was created while waiting on the mutex
+		{
+			return {};
+		}
+
+		if (entries[front].state == 0xff)
+		{
+			ensure(sys_mutex_unlock(ppu, mutex) == CELL_OK); // Error code isn't checked on LLE
+			return nullptr;
+		}
+
+		const entry* const ret = &entries[front];
+
+		entries[front].state = 0xff;
+		entries[front].pcm_handle = -1;
+
+		front = (front + 1) & 3;
+		size--;
+
+		ensure(sys_mutex_unlock(ppu, mutex) == CELL_OK); // Error code isn't checked on LLE
+		return ret;
+	}
+
+	const entry& peek(ppu_thread& ppu) const
+	{
+		ensure(sys_mutex_lock(ppu, mutex, 0) == CELL_OK); // Error code isn't checked on LLE
+		const entry& ret = entries[front];
+		ensure(sys_mutex_unlock(ppu, mutex) == CELL_OK); // Error code isn't checked on LLE
+		return ret;
+	}
+};
+
+CHECK_SIZE(AdecOutputQueue, 0x54);
+
+enum class AdecSequenceState : u32
+{
+	dormant = 0x100,
+	ready = 0x200,
+	closed = 0xa00,
+};
+
+struct AdecContext // CellAdecHandle = AdecContext*
+{
+	vm::bptr<AdecContext> _this;
+	be_t<u32> this_size; // Size of this struct + AdecFrames + bitstream info structs
+
+	u32 unk; // Unused
+
+	be_t<AdecSequenceState> sequence_state;
+
+	CellAdecType type;
+	CellAdecResource res;
+	CellAdecCb callback;
+
+	vm::bptr<void> core_handle;
+	vm::bcptr<CellAdecCoreOps> core_ops;
+
+	CellCodecTimeStamp previous_pts;
+
+	be_t<s32> frames_num;
+	u32 reserved1;
+	be_t<s32> frames_head;      // Index of the oldest frame that can be consumed
+	be_t<s32> frames_tail;      // Index of the most recent frame that can be consumed
+	vm::bptr<AdecFrame> frames; // Array of AdecFrames, number of elements is return value of CellAdecCoreOps::getPcmHandleNum
+
+	be_t<u32> bitstream_info_size;
+
+	sys_mutex_attribute_t mutex_attribute;
+	be_t<u32> mutex; // sys_mutex_t
+
+	AdecOutputQueue pcm_queue;      // Output queue for cellAdecGetPcm()
+	AdecOutputQueue pcm_item_queue; // Output queue for cellAdecGetPcmItem()
+
+	u8 reserved2[1028];
+
+	[[nodiscard]] error_code get_new_pcm_handle(vm::ptr<CellAdecAuInfo> au_info) const;
+	error_code verify_pcm_handle(s32 pcm_handle) const;
+	vm::ptr<CellAdecAuInfo> get_au_info(s32 pcm_handle) const;
+	void set_state(s32 pcm_handle, u32 state) const;
+	error_code get_pcm_item(s32 pcm_handle, vm::ptr<CellAdecPcmItem>& pcm_item) const;
+	error_code set_pcm_item(s32 pcm_handle, vm::ptr<void> pcm_addr, u32 pcm_size, vm::cpptr<void> bitstream_info) const;
+	error_code link_frame(ppu_thread& ppu, s32 pcm_handle);
+	error_code unlink_frame(ppu_thread& ppu, s32 pcm_handle);
+	void reset_frame(s32 pcm_handle) const;
+	error_code correct_pts_value(ppu_thread& ppu, s32 pcm_handle, s8 correct_pts_type);
+};
+
+static_assert(std::is_standard_layout_v<AdecContext> && std::is_trivial_v<AdecContext>);
+CHECK_SIZE_ALIGN(AdecContext, 0x530, 8);
+
+
+enum : u32
+{
+	CELL_ADEC_LPCM_DVD_CH_RESERVED1,
+	CELL_ADEC_LPCM_DVD_CH_MONO,
+	CELL_ADEC_LPCM_DVD_CH_RESERVED2,
+	CELL_ADEC_LPCM_DVD_CH_STEREO,
+	CELL_ADEC_LPCM_DVD_CH_UNK1, // Either 3 front or 2 front + 1 surround
+	CELL_ADEC_LPCM_DVD_CH_UNK2, // Either 3 front + 1 surround or 2 front + 2 surround
+	CELL_ADEC_LPCM_DVD_CH_3_2,
+	CELL_ADEC_LPCM_DVD_CH_3_2_LFE,
+	CELL_ADEC_LPCM_DVD_CH_3_4,
+	CELL_ADEC_LPCM_DVD_CH_3_4_LFE,
 };
 
 struct CellAdecParamLpcm
@@ -416,6 +682,216 @@ struct CellAdecLpcmInfo
 	be_t<u32> sampleRate;
 	be_t<u32> outputDataSize;
 };
+
+// HLE exclusive, for savestates
+enum class lpcm_dec_state : u8
+{
+	waiting_for_cmd_mutex_lock,
+	waiting_for_cmd_cond_wait,
+	waiting_for_output_mutex_lock,
+	waiting_for_output_cond_wait,
+	queue_mutex_lock,
+	executing_cmd
+};
+
+class LpcmDecSemaphore
+{
+	be_t<u32> value;
+	be_t<u32> mutex; // sys_mutex_t
+	be_t<u32> cond;  // sys_cond_t
+
+public:
+	error_code init(ppu_thread& ppu, vm::ptr<LpcmDecSemaphore> _this, u32 initial_value)
+	{
+		value = initial_value;
+
+		const vm::var<sys_mutex_attribute_t> mutex_attr{{ SYS_SYNC_PRIORITY, SYS_SYNC_NOT_RECURSIVE, SYS_SYNC_NOT_PROCESS_SHARED, SYS_SYNC_NOT_ADAPTIVE, 0, 0, 0, { "_adem01"_u64 } }};
+		const vm::var<sys_cond_attribute_t> cond_attr{{ SYS_SYNC_NOT_PROCESS_SHARED, 0, 0, { "_adec01"_u64 } }};
+
+		if (error_code ret = sys_mutex_create(ppu, _this.ptr(&LpcmDecSemaphore::mutex), mutex_attr); ret != CELL_OK)
+		{
+			return ret;
+		}
+
+		return sys_cond_create(ppu, _this.ptr(&LpcmDecSemaphore::cond), mutex, cond_attr);
+	}
+
+	error_code finalize(ppu_thread& ppu) const
+	{
+		if (error_code ret = sys_cond_destroy(ppu, cond); ret != CELL_OK)
+		{
+			return ret;
+		}
+
+		return sys_mutex_destroy(ppu, mutex);
+	}
+
+	error_code release(ppu_thread& ppu)
+	{
+		if (error_code ret = sys_mutex_lock(ppu, mutex, 0); ret != CELL_OK)
+		{
+			return ret;
+		}
+
+		value++;
+
+		if (error_code ret = sys_cond_signal(ppu, cond); ret != CELL_OK)
+		{
+			return ret; // LLE doesn't unlock the mutex
+		}
+
+		return sys_mutex_unlock(ppu, mutex);
+	}
+
+	error_code acquire(ppu_thread& ppu, lpcm_dec_state& savestate)
+	{
+		if (savestate == lpcm_dec_state::waiting_for_cmd_cond_wait)
+		{
+			goto cond_wait;
+		}
+
+		savestate = lpcm_dec_state::waiting_for_cmd_mutex_lock;
+
+		if (error_code ret = sys_mutex_lock(ppu, mutex, 0); ret != CELL_OK)
+		{
+			return ret;
+		}
+
+		if (ppu.state & cpu_flag::again)
+		{
+			return {};
+		}
+
+		if (value == 0u)
+		{
+			savestate = lpcm_dec_state::waiting_for_cmd_cond_wait;
+			cond_wait:
+
+			if (error_code ret = sys_cond_wait(ppu, cond, 0); ret != CELL_OK)
+			{
+				return ret; // LLE doesn't unlock the mutex
+			}
+
+			if (ppu.state & cpu_flag::again)
+			{
+				return {};
+			}
+		}
+
+		value--;
+
+		return sys_mutex_unlock(ppu, mutex);
+	}
+};
+
+CHECK_SIZE(LpcmDecSemaphore, 0xc);
+
+enum class LpcmDecCmdType : u32
+{
+	start_seq,
+	end_seq,
+	decode_au,
+	close
+};
+
+struct LpcmDecCmd
+{
+	be_t<s32> pcm_handle;
+	vm::bcptr<void> au_start_addr;
+	be_t<u32> au_size;
+	u32 reserved1[2];
+	CellAdecParamLpcm lpcm_param;
+	be_t<LpcmDecCmdType> type;
+	u32 reserved2;
+
+	LpcmDecCmd() = default; // cellAdecOpen()
+
+	LpcmDecCmd(LpcmDecCmdType&& type) // End sequence
+		: type(type)
+	{
+	}
+
+	LpcmDecCmd(LpcmDecCmdType&& type, const CellAdecParamLpcm& lpcm_param) // Start sequence
+		: lpcm_param(lpcm_param), type(type)
+	{
+	}
+
+	LpcmDecCmd(LpcmDecCmdType&& type, const s32& pcm_handle, const CellAdecAuInfo& au_info) // Decode au
+		: pcm_handle(pcm_handle), au_start_addr(au_info.startAddr), au_size(au_info.size), type(type)
+	{
+	}
+};
+
+CHECK_SIZE(LpcmDecCmd, 0x2c);
+
+struct LpcmDecContext
+{
+	AdecCmdQueue<LpcmDecCmd> cmd_queue;
+
+	be_t<u64> thread_id; // sys_ppu_thread_t
+
+	be_t<u32> queue_size_mutex; // sys_mutex_t
+	be_t<u32> queue_size_cond;  // sys_cond_t, unused
+	be_t<u32> unk_mutex;        // sys_mutex_t, unused
+	be_t<u32> unk_cond;         // sys_cond_t, unused
+
+	be_t<u32> run_thread;
+
+	AdecCb<AdecNotifyAuDone> notify_au_done;
+	AdecCb<AdecNotifyPcmOut> notify_pcm_out;
+	AdecCb<AdecNotifyError> notify_error;
+	AdecCb<AdecNotifySeqDone> notify_seq_done;
+
+	be_t<u32> output_locked;
+	vm::bptr<f32> output;
+
+	vm::bptr<CellAdecParamLpcm> lpcm_param;
+
+	vm::bcptr<void> spurs_cmd_data;
+
+	// HLE exclusive
+	lpcm_dec_state savestate;
+	u64 cmd_counter; // For debugging
+
+	u8 reserved1[24]; // 36 bytes on LLE
+
+	be_t<u32> output_mutex;    // sys_mutex_t
+	be_t<u32> output_consumed; // sys_cond_t
+
+	LpcmDecSemaphore cmd_available;
+	LpcmDecSemaphore reserved2; // Unused
+
+	be_t<u32> queue_mutex; // sys_mutex_t
+
+	be_t<u32> error_occurred;
+
+	u8 spurs_stuff[32];
+
+	be_t<u32> spurs_queue_pop_mutex;
+	be_t<u32> spurs_queue_push_mutex;
+
+	be_t<u32> using_existing_spurs_instance;
+
+	be_t<u32> dvd_packing;
+
+	be_t<u32> output_size;
+
+	LpcmDecCmd cmd; // HLE exclusive, name of Spurs taskset (32 bytes) + CellSpursTaskLsPattern on LLE
+
+	u8 more_spurs_stuff[10]; // 52 bytes on LLE
+
+	void exec(ppu_thread& ppu);
+
+	template <LpcmDecCmdType type>
+	error_code send_command(ppu_thread& ppu, auto&&... args);
+
+	inline error_code release_output(ppu_thread& ppu);
+};
+
+static_assert(std::is_standard_layout_v<LpcmDecContext>);
+CHECK_SIZE_ALIGN(LpcmDecContext, 0x1c8, 8);
+
+constexpr s32 LPCM_DEC_OUTPUT_BUFFER_SIZE = 0x40000;
 
 // CELP Excitation Mode
 enum CELP_ExcitationMode : s32
@@ -771,45 +1247,6 @@ struct CellAdecAtrac3Info
 	be_t<s32> nbytes;
 };
 
-enum ATRACX_WordSize : s32
-{
-	CELL_ADEC_ATRACX_WORD_SZ_16BIT = 0x02,
-	CELL_ADEC_ATRACX_WORD_SZ_24BIT = 0x03,
-	CELL_ADEC_ATRACX_WORD_SZ_32BIT = 0x04,
-	CELL_ADEC_ATRACX_WORD_SZ_FLOAT = 0x84,
-};
-
-enum ATRACX_ATSHeaderInclude : u8
-{
-	CELL_ADEC_ATRACX_ATS_HDR_NOTINC = 0,
-	CELL_ADEC_ATRACX_ATS_HDR_INC = 1,
-};
-
-enum ATRACX_DownmixFlag : u8
-{
-	ATRACX_DOWNMIX_OFF = 0,
-	ATRACX_DOWNMIX_ON = 1,
-};
-
-struct CellAdecParamAtracX
-{
-	be_t<s32> sampling_freq;
-	be_t<s32> ch_config_idx;
-	be_t<s32> nch_out;
-	be_t<s32> nbytes;
-	std::array<u8, 4> extra_config_data; // downmix coefficients
-	be_t<s32> bw_pcm; // ATRACX_WordSize
-	ATRACX_DownmixFlag downmix_flag;
-	ATRACX_ATSHeaderInclude au_includes_ats_hdr_flg;
-};
-
-struct CellAdecAtracXInfo
-{
-	be_t<u32> samplingFreq; // [Hz]
-	be_t<u32> channelConfigIndex;
-	be_t<u32> nbytes;
-};
-
 enum MP3_WordSize : s32
 {
 	CELL_ADEC_MP3_WORD_SZ_16BIT = 3,
@@ -993,106 +1430,3 @@ struct CellAdecMpmcInfo
 	be_t<u32> lfePresent;
 	be_t<u32> channelCoufiguration;
 };
-
-/* Audio Decoder Thread Classes */
-
-enum AdecJobType : u32
-{
-	adecStartSeq,
-	adecEndSeq,
-	adecDecodeAu,
-	adecClose,
-};
-
-struct AdecTask
-{
-	AdecJobType type;
-	union
-	{
-		struct
-		{
-			u32 auInfo_addr;
-			u32 addr;
-			u32 size;
-			u64 pts;
-			u64 userdata;
-		} au;
-
-		struct
-		{
-			s32 sample_rate;
-			s32 channel_config;
-			s32 channels;
-			s32 frame_size;
-			std::array<u8, 4> extra_config;
-			s32 output;
-			u8 downmix;
-			u8 ats_header;
-		} at3p;
-	};
-
-	AdecTask(AdecJobType type)
-		: type(type)
-	{
-	}
-
-	AdecTask()
-	{
-	}
-};
-
-struct AdecFrame
-{
-	struct AVFrame* data;
-	u64 pts;
-	u64 userdata;
-	u32 auAddr;
-	u32 auSize;
-	u32 size;
-};
-
-int adecRead(void* opaque, u8* buf, int buf_size);
-
-static const u32 at3freq[8] = { 32000, 44100, 48000, 88200, 96000, 0, 0, 0 };
-
-struct OMAHeader // OMA Header
-{
-	u32 magic; // 0x01334145
-	u16 size; // 96 << 8
-	u16 unk0; // 0xffff
-	u64 unk1; // 0x00500f0100000000ULL
-	u64 unk2; // 0xcef5000000000400ULL
-	u64 unk3; // 0x1c458024329192d2ULL
-	u8 codecId; // 1 for ATRAC3P
-	u8 code0; // 0
-	u8 code1;
-	u8 code2;
-	u32 reserved[15]; // 0
-
-	OMAHeader(u8 codec_id, u32 freq, u8 channel_count, u32 frame_size)
-		: magic(0x01334145)
-		, size(96 << 8)
-		, unk0(0xffff)
-		, unk1(0x00500f0100000000ULL)
-		, unk2(0xcef5000000000400ULL)
-		, unk3(0x1c458024329192d2ULL)
-		, codecId(codec_id)
-		, code0(0)
-	{
-		memset(reserved, 0, sizeof(reserved));
-
-		u8 freq_code;
-		for (freq_code = 0; freq_code < 5; freq_code++)
-		{
-			if (at3freq[freq_code] == freq)
-			{
-				break;
-			}
-		}
-		u32 prepared_frame_size = (frame_size - 8) / 8;
-		code1 = ((prepared_frame_size >> 8) & 0x3) | ((channel_count & 0x7) << 2) | (freq_code << 5);
-		code2 = prepared_frame_size & 0xff;
-	}
-};
-
-CHECK_SIZE(OMAHeader, 96);

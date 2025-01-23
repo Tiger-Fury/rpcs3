@@ -54,6 +54,8 @@ namespace rsx::overlays
 	extern void reset_debug_overlay();
 }
 
+extern void qt_events_aware_op(int repeat_duration_ms, std::function<bool()> wrapped_op);
+
 /** Emu.Init() wrapper for user management */
 void main_application::InitializeEmulator(const std::string& user, bool show_gui)
 {
@@ -123,14 +125,15 @@ EmuCallbacks main_application::CreateCallbacks()
 		{
 		case keyboard_handler::null:
 		{
-			g_fxo->init<KeyboardHandlerBase, NullKeyboardHandler>(Emu.DeserialManager());
+			ensure(g_fxo->init<KeyboardHandlerBase, NullKeyboardHandler>(Emu.DeserialManager()));
 			break;
 		}
 		case keyboard_handler::basic:
 		{
 			basic_keyboard_handler* ret = g_fxo->init<KeyboardHandlerBase, basic_keyboard_handler>(Emu.DeserialManager());
+			ensure(ret);
 			ret->moveToThread(get_thread());
-			ret->SetTargetWindow(m_game_window);
+			ret->SetTargetWindow(reinterpret_cast<QWindow*>(m_game_window));
 			break;
 		}
 		}
@@ -159,19 +162,20 @@ EmuCallbacks main_application::CreateCallbacks()
 		{
 		case mouse_handler::null:
 		{
-			g_fxo->init<MouseHandlerBase, NullMouseHandler>(Emu.DeserialManager());
+			ensure(g_fxo->init<MouseHandlerBase, NullMouseHandler>(Emu.DeserialManager()));
 			break;
 		}
 		case mouse_handler::basic:
 		{
 			basic_mouse_handler* ret = g_fxo->init<MouseHandlerBase, basic_mouse_handler>(Emu.DeserialManager());
+			ensure(ret);
 			ret->moveToThread(get_thread());
-			ret->SetTargetWindow(m_game_window);
+			ret->SetTargetWindow(reinterpret_cast<QWindow*>(m_game_window));
 			break;
 		}
 		case mouse_handler::raw:
 		{
-			g_fxo->init<MouseHandlerBase, raw_mouse_handler>(Emu.DeserialManager());
+			ensure(g_fxo->init<MouseHandlerBase, raw_mouse_handler>(Emu.DeserialManager()));
 			break;
 		}
 		}
@@ -180,8 +184,8 @@ EmuCallbacks main_application::CreateCallbacks()
 	callbacks.init_pad_handler = [this](std::string_view title_id)
 	{
 		ensure(g_fxo->init<named_thread<pad_thread>>(get_thread(), m_game_window, title_id));
-		extern void process_qt_events();
-		while (!pad::g_started) process_qt_events();
+
+		qt_events_aware_op(0, [](){ return !!pad::g_started; });
 	};
 
 	callbacks.get_audio = []() -> std::shared_ptr<AudioBackend>

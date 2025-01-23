@@ -2,6 +2,7 @@
 #include "PadHandler.h"
 #include "Emu/system_utils.hpp"
 #include "Emu/system_config.h"
+#include "Emu/Cell/timers.hpp"
 #include "Input/pad_thread.h"
 #include "Input/product_info.h"
 
@@ -172,24 +173,28 @@ u16 PadHandlerBase::ConvertAxis(f32 value)
 // using a simple scale/sensitivity increase would *work* although it eats a chunk of our usable range in exchange
 // this might be the best for now, in practice it seems to push the corners to max of 20x20, with a squircle_factor of 8000
 // This function assumes inX and inY is already in 0-255
-std::tuple<u16, u16> PadHandlerBase::ConvertToSquirclePoint(u16 inX, u16 inY, u32 squircle_factor)
+void PadHandlerBase::ConvertToSquirclePoint(u16& inX, u16& inY, u32 squircle_factor)
 {
-	// convert inX and Y to a (-1, 1) vector;
-	const f32 x = (inX - 127.5f) / 127.5f;
-	const f32 y = (inY - 127.5f) / 127.5f;
+	if (!squircle_factor)
+		return;
 
-	// compute angle and len of given point to be used for squircle radius
+	constexpr f32 radius = 127.5f;
+
+	// convert inX and Y to a (-1, 1) vector;
+	const f32 x = (inX - radius) / radius;
+	const f32 y = (inY - radius) / radius;
+
+	// compute angle and len of given point to be used for squircle radius. Clamp to circle, we don't want to exceed the squircle.
 	const f32 angle = std::atan2(y, x);
-	const f32 r = std::sqrt(std::pow(x, 2.f) + std::pow(y, 2.f));
+	const f32 distance_to_center = std::min(1.0f, std::sqrt(std::pow(x, 2.f) + std::pow(y, 2.f)));
 
 	// now find len/point on the given squircle from our current angle and radius in polar coords
 	// https://thatsmaths.com/2016/07/14/squircles/
-	const f32 newLen = (1 + std::pow(std::sin(2 * angle), 2.f) / (squircle_factor / 1000.f)) * r;
+	const f32 new_len = (1 + std::pow(std::sin(2 * angle), 2.f) / (squircle_factor / 1000.f)) * distance_to_center;
 
 	// we now have len and angle, convert to cartesian
-	const int newX = Clamp0To255(std::round(((newLen * std::cos(angle)) + 1) * 127.5f));
-	const int newY = Clamp0To255(std::round(((newLen * std::sin(angle)) + 1) * 127.5f));
-	return std::tuple<u16, u16>(newX, newY);
+	inX = Clamp0To255(std::round(((new_len * std::cos(angle)) + 1) * radius));
+	inY = Clamp0To255(std::round(((new_len * std::sin(angle)) + 1) * radius));
 }
 
 void PadHandlerBase::init_configs()
@@ -220,10 +225,13 @@ cfg_pad* PadHandlerBase::get_config(const std::string& pad_id)
 	return nullptr;
 }
 
-PadHandlerBase::connection PadHandlerBase::get_next_button_press(const std::string& pad_id, const pad_callback& callback, const pad_fail_callback& fail_callback, bool get_blacklist, const std::vector<std::string>& /*buttons*/)
+PadHandlerBase::connection PadHandlerBase::get_next_button_press(const std::string& pad_id, const pad_callback& callback, const pad_fail_callback& fail_callback, gui_call_type call_type, const std::vector<std::string>& /*buttons*/)
 {
-	if (get_blacklist)
+	if (call_type == gui_call_type::blacklist)
 		blacklist.clear();
+
+	if (call_type == gui_call_type::reset_input || call_type == gui_call_type::blacklist)
+		min_button_values.clear();
 
 	auto device = get_device(pad_id);
 
@@ -235,9 +243,22 @@ PadHandlerBase::connection PadHandlerBase::get_next_button_press(const std::stri
 		return status;
 	}
 
-	if (status == connection::no_data)
+	if (status == connection::no_data || call_type == gui_call_type::get_connection)
 	{
 		return status;
+	}
+
+	if (m_type == pad_handler::move)
+	{
+		// Keep the pad cached to reduce expensive one time requests
+		if (!m_pad_for_pad_settings || m_pad_for_pad_settings->m_pad_handler != m_type)
+		{
+			m_pad_for_pad_settings = std::make_shared<Pad>(m_type, 0, 0, 0, 0);
+		}
+
+		// Get extended device ID
+		pad_ensemble binding{m_pad_for_pad_settings, device, nullptr};
+		get_extended_info(binding);
 	}
 
 	// Get the current button values
@@ -254,30 +275,50 @@ PadHandlerBase::connection PadHandlerBase::get_next_button_press(const std::stri
 
 	for (const auto& [keycode, name] : button_list)
 	{
-		const u16& value = data[keycode];
-
-		if (!get_blacklist && blacklist.contains(keycode))
+		if (call_type != gui_call_type::blacklist && blacklist.contains(keycode))
 			continue;
+
+		const u16 value = data[keycode];
+		u16& min_value = min_button_values[keycode];
+
+		if (call_type == gui_call_type::reset_input || value < min_value)
+		{
+			min_value = value;
+			continue;
+		}
 
 		const bool is_trigger = get_is_left_trigger(device, keycode) || get_is_right_trigger(device, keycode);
 		const bool is_stick   = !is_trigger && (get_is_left_stick(device, keycode) || get_is_right_stick(device, keycode));
-		const bool is_button = !is_trigger && !is_stick;
+		const bool is_touch_motion = !is_trigger && !is_stick && get_is_touch_pad_motion(device, keycode);
+		const bool is_button = !is_trigger && !is_stick && !is_touch_motion;
 
-		if ((is_trigger && (value > m_trigger_threshold)) || (is_stick && (value > m_thumb_threshold)) || (is_button && (value > 0)))
+		if ((is_trigger && (value > m_trigger_threshold)) ||
+			(is_stick && (value > m_thumb_threshold)) ||
+			(is_button && (value > button_press_threshold)) ||
+			(is_touch_motion && (value > touch_threshold)))
 		{
-			if (get_blacklist)
+			if (call_type == gui_call_type::blacklist)
 			{
 				blacklist.insert(keycode);
 				input_log.error("%s Calibration: Added key [ %d = %s ] to blacklist. Value = %d", m_type, keycode, name, value);
+				continue;
 			}
-			else if (value > pressed_button.value)
+
+			const u16 diff = value > min_value ? value - min_value : 0;
+
+			if (diff > button_press_threshold && value > pressed_button.value)
 			{
 				pressed_button = { .value = value, .name = name };
 			}
 		}
 	}
 
-	if (get_blacklist)
+	if (call_type == gui_call_type::reset_input)
+	{
+		return connection::no_data;
+	}
+
+	if (call_type == gui_call_type::blacklist)
 	{
 		if (blacklist.empty())
 			input_log.success("%s Calibration: Blacklist is clear. No input spam detected", m_type);
@@ -286,13 +327,13 @@ PadHandlerBase::connection PadHandlerBase::get_next_button_press(const std::stri
 
 	if (callback)
 	{
-		const pad_preview_values preview_values = get_preview_values(data);
+		pad_preview_values preview_values = get_preview_values(data);
 		const u32 battery_level = get_battery_level(pad_id);
 
 		if (pressed_button.value > 0)
-			callback(pressed_button.value, pressed_button.name, pad_id, battery_level, preview_values);
+			callback(pressed_button.value, pressed_button.name, pad_id, battery_level, std::move(preview_values));
 		else
-			callback(0, "", pad_id, battery_level, preview_values);
+			callback(0, "", pad_id, battery_level, std::move(preview_values));
 	}
 
 	return status;
@@ -321,15 +362,19 @@ void PadHandlerBase::get_motion_sensors(const std::string& pad_id, const motion_
 		return;
 	}
 
+	// Keep the pad cached to reduce expensive one time requests
+	if (!m_pad_for_pad_settings || m_pad_for_pad_settings->m_pad_handler != m_type)
+	{
+		m_pad_for_pad_settings = std::make_shared<Pad>(m_type, 0, 0, 0, 0);
+	}
+
 	// Get the current motion values
-	std::shared_ptr<Pad> pad = std::make_shared<Pad>(m_type, 0, 0, 0, 0);
-	pad->m_sensors.resize(preview_values.size(), AnalogSensor(0, 0, 0, 0, 0));
-	pad_ensemble binding{pad, device, nullptr};
+	pad_ensemble binding{m_pad_for_pad_settings, device, nullptr};
 	get_extended_info(binding);
 
 	for (usz i = 0; i < preview_values.size(); i++)
 	{
-		preview_values[i] = pad->m_sensors[i].m_value;
+		preview_values[i] = m_pad_for_pad_settings->m_sensors[i].m_value;
 	}
 
 	callback(pad_id, std::move(preview_values));
@@ -343,12 +388,12 @@ void PadHandlerBase::convert_stick_values(u16& x_out, u16& y_out, s32 x_in, s32 
 	// Apply pad squircling if necessary
 	if (padsquircling != 0)
 	{
-		std::tie(x_out, y_out) = ConvertToSquirclePoint(x_out, y_out, padsquircling);
+		ConvertToSquirclePoint(x_out, y_out, padsquircling);
 	}
 }
 
 // Update the pad button values based on their type and thresholds. With this you can use axis or triggers as buttons or vice versa
-void PadHandlerBase::TranslateButtonPress(const std::shared_ptr<PadDevice>& device, u64 keyCode, bool& pressed, u16& val, bool ignore_stick_threshold, bool ignore_trigger_threshold)
+void PadHandlerBase::TranslateButtonPress(const std::shared_ptr<PadDevice>& device, u64 keyCode, bool& pressed, u16& val, bool use_stick_multipliers, bool ignore_stick_threshold, bool ignore_trigger_threshold)
 {
 	if (!device || !device->config)
 	{
@@ -368,12 +413,12 @@ void PadHandlerBase::TranslateButtonPress(const std::shared_ptr<PadDevice>& devi
 	else if (get_is_left_stick(device, keyCode))
 	{
 		pressed = val > (ignore_stick_threshold ? 0 : device->config->lstickdeadzone);
-		val = pressed ? NormalizeStickInput(val, device->config->lstickdeadzone, device->config->lstickmultiplier, ignore_stick_threshold) : 0;
+		val = pressed ? NormalizeStickInput(val, device->config->lstickdeadzone, use_stick_multipliers ? device->config->lstickmultiplier : 100, ignore_stick_threshold) : 0;
 	}
 	else if (get_is_right_stick(device, keyCode))
 	{
 		pressed = val > (ignore_stick_threshold ? 0 : device->config->rstickdeadzone);
-		val = pressed ? NormalizeStickInput(val, device->config->rstickdeadzone, device->config->rstickmultiplier, ignore_stick_threshold) : 0;
+		val = pressed ? NormalizeStickInput(val, device->config->rstickdeadzone, use_stick_multipliers ? device->config->rstickmultiplier : 100, ignore_stick_threshold) : 0;
 	}
 	else // normal button (should in theory also support sensitive buttons)
 	{
@@ -438,8 +483,23 @@ bool PadHandlerBase::bindPadToDevice(std::shared_ptr<Pad> pad)
 		config->pressure_intensity
 	);
 
-	pad->m_buttons.emplace_back(special_button_offset, mapping[button::pressure_intensity_button], special_button_value::pressure_intensity);
-	pad->m_pressure_intensity_button_index = static_cast<s32>(pad->m_buttons.size()) - 1;
+	if (b_has_pressure_intensity_button)
+	{
+		pad->m_buttons.emplace_back(special_button_offset, mapping[button::pressure_intensity_button], special_button_value::pressure_intensity);
+		pad->m_pressure_intensity_button_index = static_cast<s32>(pad->m_buttons.size()) - 1;
+	}
+
+	if (b_has_analog_limiter_button)
+	{
+		pad->m_buttons.emplace_back(special_button_offset, mapping[button::analog_limiter_button], special_button_value::analog_limiter);
+		pad->m_analog_limiter_button_index = static_cast<s32>(pad->m_buttons.size()) - 1;
+	}
+
+	if (b_has_orientation)
+	{
+		pad->m_buttons.emplace_back(special_button_offset, mapping[button::orientation_reset_button], special_button_value::orientation_reset);
+		pad->m_orientation_reset_button_index = static_cast<s32>(pad->m_buttons.size()) - 1;
+	}
 
 	pad->m_buttons.emplace_back(CELL_PAD_BTN_OFFSET_DIGITAL1, mapping[button::up], CELL_PAD_CTRL_UP);
 	pad->m_buttons.emplace_back(CELL_PAD_BTN_OFFSET_DIGITAL1, mapping[button::down], CELL_PAD_CTRL_DOWN);
@@ -469,18 +529,18 @@ bool PadHandlerBase::bindPadToDevice(std::shared_ptr<Pad> pad)
 		pad->m_buttons.emplace_back(CELL_PAD_BTN_OFFSET_PRESS_PIGGYBACK, mapping[button::skateboard_tilt_right], CELL_PAD_CTRL_PRESS_R1);
 	}
 
-	pad->m_sticks.emplace_back(CELL_PAD_BTN_OFFSET_ANALOG_LEFT_X, mapping[button::ls_left], mapping[button::ls_right]);
-	pad->m_sticks.emplace_back(CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y, mapping[button::ls_down], mapping[button::ls_up]);
-	pad->m_sticks.emplace_back(CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_X, mapping[button::rs_left], mapping[button::rs_right]);
-	pad->m_sticks.emplace_back(CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_Y, mapping[button::rs_down], mapping[button::rs_up]);
+	pad->m_sticks[0] = AnalogStick(CELL_PAD_BTN_OFFSET_ANALOG_LEFT_X, mapping[button::ls_left], mapping[button::ls_right]);
+	pad->m_sticks[1] = AnalogStick(CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y, mapping[button::ls_down], mapping[button::ls_up]);
+	pad->m_sticks[2] = AnalogStick(CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_X, mapping[button::rs_left], mapping[button::rs_right]);
+	pad->m_sticks[3] = AnalogStick(CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_Y, mapping[button::rs_down], mapping[button::rs_up]);
 
-	pad->m_sensors.emplace_back(CELL_PAD_BTN_OFFSET_SENSOR_X, 0, 0, 0, DEFAULT_MOTION_X);
-	pad->m_sensors.emplace_back(CELL_PAD_BTN_OFFSET_SENSOR_Y, 0, 0, 0, DEFAULT_MOTION_Y);
-	pad->m_sensors.emplace_back(CELL_PAD_BTN_OFFSET_SENSOR_Z, 0, 0, 0, DEFAULT_MOTION_Z);
-	pad->m_sensors.emplace_back(CELL_PAD_BTN_OFFSET_SENSOR_G, 0, 0, 0, DEFAULT_MOTION_G);
+	pad->m_sensors[0] = AnalogSensor(CELL_PAD_BTN_OFFSET_SENSOR_X, 0, 0, 0, DEFAULT_MOTION_X);
+	pad->m_sensors[1] = AnalogSensor(CELL_PAD_BTN_OFFSET_SENSOR_Y, 0, 0, 0, DEFAULT_MOTION_Y);
+	pad->m_sensors[2] = AnalogSensor(CELL_PAD_BTN_OFFSET_SENSOR_Z, 0, 0, 0, DEFAULT_MOTION_Z);
+	pad->m_sensors[3] = AnalogSensor(CELL_PAD_BTN_OFFSET_SENSOR_G, 0, 0, 0, DEFAULT_MOTION_G);
 
-	pad->m_vibrateMotors.emplace_back(true, 0);
-	pad->m_vibrateMotors.emplace_back(false, 0);
+	pad->m_vibrateMotors[0] = VibrateMotor(true, 0);
+	pad->m_vibrateMotors[1] = VibrateMotor(false, 0);
 
 	m_bindings.emplace_back(pad, pad_device, nullptr);
 
@@ -537,7 +597,20 @@ std::array<std::set<u32>, PadHandlerBase::button::button_count> PadHandlerBase::
 	mapping[button::skateboard_tilt_left]  = FindKeyCodes<u32, u32>(button_list, cfg->tilt_left);
 	mapping[button::skateboard_tilt_right] = FindKeyCodes<u32, u32>(button_list, cfg->tilt_right);
 
-	mapping[button::pressure_intensity_button] = FindKeyCodes<u32, u32>(button_list, cfg->pressure_intensity_button);
+	if (b_has_pressure_intensity_button)
+	{
+		mapping[button::pressure_intensity_button] = FindKeyCodes<u32, u32>(button_list, cfg->pressure_intensity_button);
+	}
+
+	if (b_has_analog_limiter_button)
+	{
+		mapping[button::analog_limiter_button] = FindKeyCodes<u32, u32>(button_list, cfg->analog_limiter_button);
+	}
+
+	if (b_has_orientation)
+	{
+		mapping[button::orientation_reset_button] = FindKeyCodes<u32, u32>(button_list, cfg->orientation_reset_button);
+	}
 
 	return mapping;
 }
@@ -558,6 +631,7 @@ void PadHandlerBase::get_mapping(const pad_ensemble& binding)
 
 	// Find out if special buttons are pressed (introduced by RPCS3).
 	// These buttons will have a delay of one cycle, but whatever.
+	const bool analog_limiter_enabled = pad->get_analog_limiter_button_active(cfg->analog_limiter_toggle_mode.get(), pad->m_player_id);
 	const bool adjust_pressure = pad->get_pressure_intensity_button_active(cfg->pressure_intensity_toggle_mode.get(), pad->m_player_id);
 	const u32 pressure_intensity_deadzone = cfg->pressure_intensity_deadzone.get();
 
@@ -572,7 +646,7 @@ void PadHandlerBase::get_mapping(const pad_ensemble& binding)
 			bool press{};
 			u16 val = button_values[code];
 
-			TranslateButtonPress(device, code, press, val);
+			TranslateButtonPress(device, code, press, val, analog_limiter_enabled);
 
 			if (press)
 			{
@@ -614,7 +688,7 @@ void PadHandlerBase::get_mapping(const pad_ensemble& binding)
 		{
 			u16 val = button_values[key_min];
 
-			TranslateButtonPress(device, key_min, pressed, val, true);
+			TranslateButtonPress(device, key_min, pressed, val, analog_limiter_enabled, true);
 
 			if (pressed)
 			{
@@ -627,7 +701,7 @@ void PadHandlerBase::get_mapping(const pad_ensemble& binding)
 		{
 			u16 val = button_values[key_max];
 
-			TranslateButtonPress(device, key_max, pressed, val, true);
+			TranslateButtonPress(device, key_max, pressed, val, analog_limiter_enabled, true);
 
 			if (pressed)
 			{
@@ -677,6 +751,8 @@ void PadHandlerBase::process()
 		if (!device || !pad)
 			continue;
 
+		pad->move_data.orientation_enabled = b_has_orientation && device->config && device->config->orientation_enabled.get();
+
 		const connection status = update_connection(device);
 
 		switch (status)
@@ -692,6 +768,11 @@ void PadHandlerBase::process()
 
 				last_connection_status[i] = true;
 				connected_devices++;
+
+				if (b_has_orientation)
+				{
+					device->reset_orientation();
+				}
 			}
 
 			if (status == connection::no_data)
@@ -728,6 +809,11 @@ void PadHandlerBase::process()
 
 				last_connection_status[i] = false;
 				connected_devices--;
+
+				if (b_has_orientation)
+				{
+					device->reset_orientation();
+				}
 			}
 			continue;
 		}
@@ -735,6 +821,142 @@ void PadHandlerBase::process()
 
 		get_mapping(m_bindings[i]);
 		get_extended_info(m_bindings[i]);
+		get_orientation(m_bindings[i]);
 		apply_pad_data(m_bindings[i]);
 	}
+}
+
+void PadHandlerBase::set_raw_orientation(ps_move_data& move_data, f32 accel_x, f32 accel_y, f32 accel_z, f32 gyro_x, f32 gyro_y, f32 gyro_z)
+{
+	if (!move_data.orientation_enabled)
+	{
+		move_data.reset_sensors();
+		return;
+	}
+
+	// This function expects DS3 sensor accel values in linear velocity (m/s²) and gyro values in angular velocity (degree/s)
+	// The default position is flat on the ground, pointing forward.
+	// The accelerometers constantly measure G forces.
+	// The gyros measure changes in orientation and will reset when the device isn't moved anymore.
+	move_data.accelerometer_x = -accel_x;      // move_data: Increases if the device is rolled to the left
+	move_data.accelerometer_y = accel_z;       // move_data: Increases if the device is pitched upwards
+	move_data.accelerometer_z = accel_y;       // move_data: Increases if the device is moved upwards
+	move_data.gyro_x = degree_to_rad(-gyro_x); // move_data: Increases if the device is pitched upwards
+	move_data.gyro_y = degree_to_rad(gyro_z);  // move_data: Increases if the device is rolled to the right
+	move_data.gyro_z = degree_to_rad(-gyro_y); // move_data: Increases if the device is yawed to the left
+}
+
+void PadHandlerBase::set_raw_orientation(Pad& pad)
+{
+	if (!pad.move_data.orientation_enabled)
+	{
+		pad.move_data.reset_sensors();
+		return;
+	}
+
+	// acceleration (linear velocity in m/s²)
+	const f32 accel_x = (pad.m_sensors[0].m_value - 512) / static_cast<f32>(MOTION_ONE_G);
+	const f32 accel_y = (pad.m_sensors[1].m_value - 512) / static_cast<f32>(MOTION_ONE_G);
+	const f32 accel_z = (pad.m_sensors[2].m_value - 512) / static_cast<f32>(MOTION_ONE_G);
+
+	// gyro (angular velocity in degree/s)
+	constexpr f32 gyro_x = 0.0f;
+	const f32 gyro_y = (pad.m_sensors[3].m_value - 512) / (123.f / 90.f);
+	constexpr f32 gyro_z = 0.0f;
+
+	set_raw_orientation(pad.move_data, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z);
+}
+
+void PadHandlerBase::get_orientation(const pad_ensemble& binding) const
+{
+	if (!b_has_orientation) return;
+
+	const auto& pad = binding.pad;
+	const auto& device = binding.device;
+	if (!pad || !device) return;
+
+	if (pad->move_data.calibration_requested)
+	{
+		device->reset_orientation();
+		pad->move_data.quaternion = ps_move_data::default_quaternion;
+		pad->move_data.calibration_succeeded = true;
+		return;
+	}
+
+	if (!pad->move_data.orientation_enabled || pad->get_orientation_reset_button_active())
+	{
+		// This can be called extensively in quick succession, so let's just reset the pointer instead of creating a new object.
+		device->ahrs.reset();
+		pad->move_data.quaternion = ps_move_data::default_quaternion;
+		return;
+	}
+
+	device->update_orientation(pad->move_data);
+}
+
+void PadDevice::reset_orientation()
+{
+	// Initialize Fusion
+	ahrs = std::make_shared<FusionAhrs>();
+	FusionAhrsInitialise(ahrs.get());
+	ahrs->settings.convention = FusionConvention::FusionConventionEnu;
+	ahrs->settings.gain = 0.0f; // If gain is set, the algorithm tries to adjust the orientation over time.
+	FusionAhrsSetSettings(ahrs.get(), &ahrs->settings);
+	FusionAhrsReset(ahrs.get());
+}
+
+void PadDevice::update_orientation(ps_move_data& move_data)
+{
+	if (!ahrs)
+	{
+		reset_orientation();
+	}
+
+	// Get elapsed time since last update
+	const u64 now_us = get_system_time();
+	const float elapsed_sec = (last_ahrs_update_time_us == 0) ? 0.0f : ((now_us - last_ahrs_update_time_us) / 1'000'000.0f);
+	last_ahrs_update_time_us = now_us;
+
+	// The ps move handler's axis may differ from the Fusion axis, so we have to map them correctly.
+	// Don't ask how the axis work. It's basically been trial and error.
+	ensure(ahrs->settings.convention == FusionConvention::FusionConventionEnu); // East-North-Up
+
+	const FusionVector accelerometer{
+		.axis {
+			.x = -move_data.accelerometer_x,
+			.y = +move_data.accelerometer_y,
+			.z = +move_data.accelerometer_z
+		}
+	};
+
+	const FusionVector gyroscope{
+		.axis {
+			.x = +PadHandlerBase::rad_to_degree(move_data.gyro_x),
+			.y = +PadHandlerBase::rad_to_degree(move_data.gyro_z),
+			.z = -PadHandlerBase::rad_to_degree(move_data.gyro_y)
+		}
+	};
+
+	FusionVector magnetometer {};
+
+	if (move_data.magnetometer_enabled)
+	{
+		magnetometer = FusionVector{
+			.axis {
+				.x = move_data.magnetometer_x,
+				.y = move_data.magnetometer_y,
+				.z = move_data.magnetometer_z
+			}
+		};
+	}
+
+	// Update Fusion
+	FusionAhrsUpdate(ahrs.get(), gyroscope, accelerometer, magnetometer, elapsed_sec);
+
+	// Get quaternion
+	const FusionQuaternion quaternion = FusionAhrsGetQuaternion(ahrs.get());
+	move_data.quaternion[0] = quaternion.array[1];
+	move_data.quaternion[1] = quaternion.array[2];
+	move_data.quaternion[2] = quaternion.array[3];
+	move_data.quaternion[3] = quaternion.array[0];
 }

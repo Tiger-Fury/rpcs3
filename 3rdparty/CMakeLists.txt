@@ -4,6 +4,9 @@ include(CMakeDependentOption)
 
 set(CMAKE_CXX_STANDARD 20)
 
+# Defines the ARCHITECTURE variable
+include("DetectArchitecture.cmake")
+
 # Warnings are silenced for 3rdparty code
 if(NOT MSVC)
 	add_compile_options("$<$<COMPILE_LANGUAGE:CXX,C>:-w>")
@@ -41,7 +44,7 @@ add_subdirectory(libpng EXCLUDE_FROM_ALL)
 
 # pugixml
 if (USE_SYSTEM_PUGIXML)
-	pkg_check_modules(PUGIXML REQUIRED IMPORTED_TARGET pugixml>=1.11)
+	pkg_check_modules(PUGIXML REQUIRED IMPORTED_TARGET pugixml>=1.15)
 	add_library(pugixml INTERFACE)
 	target_link_libraries(pugixml INTERFACE PkgConfig::PUGIXML)
 else()
@@ -86,7 +89,6 @@ add_subdirectory(hidapi)
 
 # Vulkan
 add_subdirectory(glslang EXCLUDE_FROM_ALL)
-#add_subdirectory(SPIRV EXCLUDE_FROM_ALL)
 
 
 # yaml-cpp
@@ -108,7 +110,7 @@ endif()
 
 # OpenGL
 
-find_package(OpenGL REQUIRED)
+find_package(OpenGL REQUIRED OPTIONAL_COMPONENTS EGL)
 
 add_library(3rdparty_opengl INTERFACE)
 target_include_directories(3rdparty_opengl INTERFACE GL)
@@ -247,8 +249,8 @@ if(USE_FAUDIO)
 			message(STATUS "RPCS3: Using builtin FAudio")
 			set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared library")
 			add_subdirectory(FAudio EXCLUDE_FROM_ALL)
-			target_compile_definitions(FAudio INTERFACE -DHAVE_FAUDIO)
-			set(FAUDIO_TARGET FAudio)
+			target_compile_definitions(FAudio-static INTERFACE -DHAVE_FAUDIO)
+			set(FAUDIO_TARGET FAudio-static)
 		endif()
 	endif()
 endif()
@@ -267,37 +269,29 @@ if(USE_SYSTEM_FFMPEG)
 	target_include_directories(3rdparty_ffmpeg INTERFACE ${FFMPEG_INCLUDE_DIR})
 	target_link_libraries(3rdparty_ffmpeg INTERFACE ${FFMPEG_LIBRARIES})
 else()
-	if (NOT MSVC AND WIN32)
-		message(FATAL_ERROR "-- RPCS3: building ffmpeg submodule is currently not supported")
-	else()
-		message(STATUS "RPCS3: using builtin ffmpeg")
+	message(STATUS "RPCS3: using builtin ffmpeg")
+	add_subdirectory(ffmpeg EXCLUDE_FROM_ALL)
+	# ffmpeg-core libraries are extracted to CMAKE_BINARY_DIR
+	set(FFMPEG_LIB_DIR "${CMAKE_BINARY_DIR}/3rdparty/ffmpeg/lib")
 
-		if (WIN32)
-			set(FFMPEG_LIB_DIR "ffmpeg/lib/windows/x86_64")
-			target_link_libraries(3rdparty_ffmpeg INTERFACE "Bcrypt.lib")
-		elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-			set(FFMPEG_LIB_DIR "ffmpeg/lib/linux/ubuntu-20.04/x86_64")
-		elseif(APPLE)
-			set(FFMPEG_LIB_DIR "ffmpeg/lib/macos/x86_64")
-		else()
-			message(FATAL_ERROR "Prebuilt ffmpeg is not available on this platform! Try USE_SYSTEM_FFMPEG=ON.")
-		endif()
-
-		find_library(FFMPEG_LIB_AVFORMAT avformat PATHS ${FFMPEG_LIB_DIR} NO_DEFAULT_PATH)
-		find_library(FFMPEG_LIB_AVCODEC avcodec PATHS ${FFMPEG_LIB_DIR} NO_DEFAULT_PATH)
-		find_library(FFMPEG_LIB_AVUTIL avutil PATHS ${FFMPEG_LIB_DIR} NO_DEFAULT_PATH)
-		find_library(FFMPEG_LIB_SWSCALE swscale PATHS ${FFMPEG_LIB_DIR} NO_DEFAULT_PATH)
-		find_library(FFMPEG_LIB_SWRESAMPLE swresample PATHS ${FFMPEG_LIB_DIR} NO_DEFAULT_PATH)
-
-		target_link_libraries(3rdparty_ffmpeg
-		INTERFACE
-			${FFMPEG_LIB_AVFORMAT}
-			${FFMPEG_LIB_AVCODEC}
-			${FFMPEG_LIB_AVUTIL}
-			${FFMPEG_LIB_SWSCALE}
-			${FFMPEG_LIB_SWRESAMPLE}
-		)
+	if (WIN32)
+		target_link_libraries(3rdparty_ffmpeg INTERFACE "Bcrypt.lib")
 	endif()
+
+	find_library(FFMPEG_LIB_AVFORMAT avformat PATHS ${FFMPEG_LIB_DIR} NO_DEFAULT_PATH)
+	find_library(FFMPEG_LIB_AVCODEC avcodec PATHS ${FFMPEG_LIB_DIR} NO_DEFAULT_PATH)
+	find_library(FFMPEG_LIB_AVUTIL avutil PATHS ${FFMPEG_LIB_DIR} NO_DEFAULT_PATH)
+	find_library(FFMPEG_LIB_SWSCALE swscale PATHS ${FFMPEG_LIB_DIR} NO_DEFAULT_PATH)
+	find_library(FFMPEG_LIB_SWRESAMPLE swresample PATHS ${FFMPEG_LIB_DIR} NO_DEFAULT_PATH)
+
+	target_link_libraries(3rdparty_ffmpeg
+	INTERFACE
+		${FFMPEG_LIB_AVFORMAT}
+		${FFMPEG_LIB_AVCODEC}
+		${FFMPEG_LIB_AVUTIL}
+		${FFMPEG_LIB_SWSCALE}
+		${FFMPEG_LIB_SWRESAMPLE}
+	)
 
 	target_include_directories(3rdparty_ffmpeg INTERFACE "ffmpeg/include")
 endif()
@@ -349,6 +343,12 @@ add_subdirectory(miniupnp EXCLUDE_FROM_ALL)
 # RTMIDI
 add_subdirectory(rtmidi EXCLUDE_FROM_ALL)
 
+# OPENCV
+add_subdirectory(opencv EXCLUDE_FROM_ALL)
+
+# FUSION
+add_subdirectory(fusion EXCLUDE_FROM_ALL)
+
 # add nice ALIAS targets for ease of use
 if(USE_SYSTEM_LIBUSB)
 	add_library(3rdparty::libusb ALIAS usb-1.0-shared)
@@ -379,3 +379,5 @@ add_library(3rdparty::soundtouch ALIAS soundtouch)
 add_library(3rdparty::sdl2 ALIAS ${SDL2_TARGET})
 add_library(3rdparty::miniupnpc ALIAS libminiupnpc-static)
 add_library(3rdparty::rtmidi ALIAS rtmidi)
+add_library(3rdparty::opencv ALIAS ${OPENCV_TARGET})
+add_library(3rdparty::fusion ALIAS Fusion)

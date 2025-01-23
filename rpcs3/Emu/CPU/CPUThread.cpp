@@ -8,6 +8,7 @@
 #include "Emu/Memory/vm_reservation.h"
 #include "Emu/IdManager.h"
 #include "Emu/GDB.h"
+#include "Emu/Cell/lv2/sys_spu.h"
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/SPUThread.h"
 #include "Emu/RSX/RSXThread.h"
@@ -17,6 +18,7 @@
 #include <thread>
 #include <unordered_map>
 #include <map>
+#include <shared_mutex>
 
 #if defined(ARCH_X64)
 #include <emmintrin.h>
@@ -73,6 +75,87 @@ template<>
 void fmt_class_string<bs_t<cpu_flag>>::format(std::string& out, u64 arg)
 {
 	format_bitset(out, arg, "[", "|", "]", &fmt_class_string<cpu_flag>::format);
+}
+
+enum cpu_threads_emulation_info_dump_t : u32 {};
+
+template<>
+void fmt_class_string<cpu_threads_emulation_info_dump_t>::format(std::string& out, u64 arg)
+{
+	// Do not dump all threads, only select few
+	// Aided by thread ID for filtering
+	const u32 must_have_cpu_id = static_cast<u32>(arg);
+
+	// Dump main_thread
+	const auto main_ppu = idm::get_unlocked<named_thread<ppu_thread>>(ppu_thread::id_base);
+
+	if (main_ppu)
+	{
+		fmt::append(out, "\n%s's thread context:\n", main_ppu->get_name());
+		main_ppu->dump_all(out);
+	}
+
+	if (must_have_cpu_id >> 24 == ppu_thread::id_base >> 24)
+	{
+		if (must_have_cpu_id != ppu_thread::id_base)
+		{
+			const auto selected_ppu = idm::get_unlocked<named_thread<ppu_thread>>(must_have_cpu_id);
+
+			if (selected_ppu)
+			{
+				fmt::append(out, "\n%s's thread context:\n", selected_ppu->get_name());
+				selected_ppu->dump_all(out);
+			}
+		}
+	}
+	else if (must_have_cpu_id >> 24 == spu_thread::id_base >> 24)
+	{
+		const auto selected_spu = idm::get_unlocked<named_thread<spu_thread>>(must_have_cpu_id);
+
+		if (selected_spu)
+		{
+			if (selected_spu->get_type() == spu_type::threaded && selected_spu->group->max_num > 1u)
+			{
+				// Dump the information of the entire group
+				// Do not block because it is a potentially sensitive context
+				std::shared_lock rlock(selected_spu->group->mutex, std::defer_lock);
+
+				for (u32 i = 0; !rlock.try_lock() && i < 100; i++)
+				{
+					busy_wait();
+				}
+
+				if (rlock)
+				{
+					for (const auto& spu : selected_spu->group->threads)
+					{
+						if (spu && spu != selected_spu)
+						{
+							fmt::append(out, "\n%s's thread context:\n", spu->get_name());
+							spu->dump_all(out);
+						}
+					}
+				}
+				else
+				{
+					fmt::append(out, "\nFailed to dump SPU thread group's thread's information!");
+				}
+
+				// Print the specified SPU thread last
+			}
+
+			fmt::append(out, "\n%s's thread context:\n", selected_spu->get_name());
+			selected_spu->dump_all(out);
+		}
+	}
+	else if (must_have_cpu_id >> 24 == rsx::thread::id_base >> 24)
+	{
+		if (auto rsx = rsx::get_current_renderer())
+		{
+			fmt::append(out, "\n%s's thread context:\n", rsx->get_name());
+			rsx->dump_all(out);
+		}
+	}
 }
 
 // CPU profiler thread
@@ -153,7 +236,7 @@ struct cpu_prof
 		}
 
 		// Print info
-		void print(const std::shared_ptr<cpu_thread>& ptr)
+		void print(const shared_ptr<cpu_thread>& ptr)
 		{
 			if (new_samples < min_print_samples || samples == idle)
 			{
@@ -180,7 +263,7 @@ struct cpu_prof
 			new_samples = 0;
 		}
 
-		static void print_all(std::unordered_map<std::shared_ptr<cpu_thread>, sample_info>& threads)
+		static void print_all(std::unordered_map<shared_ptr<cpu_thread>, sample_info>& threads, sample_info& all_info)
 		{
 			u64 new_samples = 0;
 
@@ -193,23 +276,23 @@ struct cpu_prof
 
 			std::multimap<u64, u64, std::greater<u64>> chart;
 
-			std::unordered_map<u64, u64, value_hash<u64>> freq;
-
-			u64 samples = 0, idle = 0;
-			u64 reservation = 0;
-
 			for (auto& [_, info] : threads)
 			{
 				// This function collects thread information regardless of 'new_samples' member state
 				for (auto& [name, count] : info.freq)
 				{
-					freq[name] += count;
+					all_info.freq[name] += count;
 				}
 
-				samples += info.samples;
-				idle += info.idle;
-				reservation += info.reservation_samples;
+				all_info.samples += info.samples;
+				all_info.idle += info.idle;
+				all_info.reservation_samples += info.reservation_samples;
 			}
+
+			const u64 samples = all_info.samples;
+			const u64 idle = all_info.idle;
+			const u64 reservation = all_info.reservation_samples;
+			const auto& freq = all_info.freq;
 
 			if (samples == idle)
 			{
@@ -232,9 +315,11 @@ struct cpu_prof
 		}
 	};
 
+	sample_info all_threads_info{};
+
 	void operator()()
 	{
-		std::unordered_map<std::shared_ptr<cpu_thread>, sample_info> threads;
+		std::unordered_map<shared_ptr<cpu_thread>, sample_info> threads;
 
 		while (thread_ctrl::state() != thread_state::aborting)
 		{
@@ -250,15 +335,15 @@ struct cpu_prof
 					continue;
 				}
 
-				std::shared_ptr<cpu_thread> ptr;
+				shared_ptr<cpu_thread> ptr;
 
 				if (id >> 24 == 1)
 				{
-					ptr = idm::get<named_thread<ppu_thread>>(id);
+					ptr = idm::get_unlocked<named_thread<ppu_thread>>(id);
 				}
 				else if (id >> 24 == 2)
 				{
-					ptr = idm::get<named_thread<spu_thread>>(id);
+					ptr = idm::get_unlocked<named_thread<spu_thread>>(id);
 				}
 				else
 				{
@@ -335,7 +420,8 @@ struct cpu_prof
 			{
 				profiler.success("Flushing profiling results...");
 
-				sample_info::print_all(threads);
+				all_threads_info = {};
+				sample_info::print_all(threads, all_threads_info);
 			}
 
 			if (Emu.IsPaused())
@@ -351,18 +437,47 @@ struct cpu_prof
 				continue;
 			}
 
-			// Wait, roughly for 20µs
+			// Wait, roughly for 20us
 			thread_ctrl::wait_for(20, false);
 		}
 
 		// Print all remaining results
-		sample_info::print_all(threads);
+		sample_info::print_all(threads, all_threads_info);
 	}
 
 	static constexpr auto thread_name = "CPU Profiler"sv;
 };
 
+
 using cpu_profiler = named_thread<cpu_prof>;
+
+extern f64 get_cpu_program_usage_percent(u64 hash)
+{
+	if (auto prof = g_fxo->try_get<cpu_profiler>(); prof && *prof == thread_state::finished)
+	{
+		if (Emu.IsStopped())
+		{
+			u64 total = 0;
+
+			for (auto [name, count] : prof->all_threads_info.freq)
+			{
+				if ((name & -65536) == hash)
+				{
+					total += count;
+				}
+			}
+
+			if (!total)
+			{
+				return 0;
+			}
+
+			return std::max<f64>(0.0001, static_cast<f64>(total) * 100 / (prof->all_threads_info.samples - prof->all_threads_info.idle));
+		}
+	}
+
+	return 0;
+}
 
 thread_local DECLARE(cpu_thread::g_tls_this_thread) = nullptr;
 
@@ -1043,7 +1158,7 @@ cpu_thread& cpu_thread::operator=(thread_state)
 		{
 			if (u32 resv = atomic_storage<u32>::load(thread->raddr))
 			{
-				vm::reservation_notifier(resv).notify_all();
+				vm::reservation_notifier_notify(resv);
 			}
 		}
 	}
@@ -1187,7 +1302,7 @@ cpu_thread* cpu_thread::get_next_cpu()
 	return nullptr;
 }
 
-std::shared_ptr<CPUDisAsm> make_disasm(const cpu_thread* cpu);
+std::shared_ptr<CPUDisAsm> make_disasm(const cpu_thread* cpu, shared_ptr<cpu_thread> handle);
 
 void cpu_thread::dump_all(std::string& ret) const
 {
@@ -1203,7 +1318,7 @@ void cpu_thread::dump_all(std::string& ret) const
 	if (u32 cur_pc = get_pc(); cur_pc != umax)
 	{
 		// Dump a snippet of currently executed code (may be unreliable with non-static-interpreter decoders)
-		auto disasm = make_disasm(this);
+		auto disasm = make_disasm(this, null_ptr);
 
 		const auto rsx = try_get<rsx::thread>();
 
@@ -1443,14 +1558,14 @@ u32 CPUDisAsm::DisAsmBranchTarget(s32 /*imm*/)
 	return 0;
 }
 
-extern bool try_lock_spu_threads_in_a_state_compatible_with_savestates(bool revert_lock, std::vector<std::pair<std::shared_ptr<named_thread<spu_thread>>, u32>>* out_list)
+extern bool try_lock_spu_threads_in_a_state_compatible_with_savestates(bool revert_lock, std::vector<std::pair<shared_ptr<named_thread<spu_thread>>, u32>>* out_list)
 {
 	if (out_list)
 	{
 		out_list->clear();
 	}
 
-	auto get_spus = [old_counter = u64{umax}, spu_list = std::vector<std::shared_ptr<named_thread<spu_thread>>>()](bool can_collect, bool force_collect) mutable
+	auto get_spus = [old_counter = u64{umax}, spu_list = std::vector<shared_ptr<named_thread<spu_thread>>>()](bool can_collect, bool force_collect) mutable
 	{
 		const u64 new_counter = cpu_thread::g_threads_created + cpu_thread::g_threads_deleted;
 

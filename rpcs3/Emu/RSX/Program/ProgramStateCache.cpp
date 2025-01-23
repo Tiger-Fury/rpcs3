@@ -4,6 +4,25 @@
 
 #include <stack>
 #include "util/v128.hpp"
+#include "util/asm.hpp"
+
+
+#if defined(ARCH_X64)
+#include "emmintrin.h"
+#include "immintrin.h"
+#endif
+
+#ifdef ARCH_ARM64
+#ifndef _MSC_VER
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstrict-aliasing"
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#endif
+#include "Emu/CPU/sse2neon.h"
+#ifndef _MSC_VER
+#pragma GCC diagnostic pop
+#endif
+#endif
 
 using namespace program_hash_util;
 
@@ -321,16 +340,23 @@ vertex_program_utils::vertex_program_metadata vertex_program_utils::analyse_vert
 
 usz vertex_program_storage_hash::operator()(const RSXVertexProgram &program) const
 {
-	usz hash = vertex_program_utils::get_vertex_program_ucode_hash(program);
-	hash ^= program.output_mask;
-	hash ^= program.texture_state.texture_dimensions;
-	hash ^= program.texture_state.multisampled_textures;
-	return hash;
+	const usz ucode_hash = vertex_program_utils::get_vertex_program_ucode_hash(program);
+	const u32 state_params[] =
+	{
+		program.ctrl,
+		program.output_mask,
+		program.texture_state.texture_dimensions,
+		program.texture_state.multisampled_textures,
+	};
+	const usz metadata_hash = rpcs3::hash_array(state_params);
+	return rpcs3::hash64(ucode_hash, metadata_hash);
 }
 
 bool vertex_program_compare::operator()(const RSXVertexProgram &binary1, const RSXVertexProgram &binary2) const
 {
 	if (binary1.output_mask != binary2.output_mask)
+		return false;
+	if (binary1.ctrl != binary2.ctrl)
 		return false;
 	if (binary1.texture_state != binary2.texture_state)
 		return false;
@@ -519,24 +545,33 @@ usz fragment_program_utils::get_fragment_program_ucode_hash(const RSXFragmentPro
 
 usz fragment_program_storage_hash::operator()(const RSXFragmentProgram& program) const
 {
-	usz hash = fragment_program_utils::get_fragment_program_ucode_hash(program);
-	hash ^= program.ctrl;
-	hash ^= +program.two_sided_lighting;
-	hash ^= program.texture_state.texture_dimensions;
-	hash ^= program.texture_state.shadow_textures;
-	hash ^= program.texture_state.redirected_textures;
-	hash ^= program.texture_state.multisampled_textures;
-	hash ^= program.texcoord_control_mask;
-
-	return hash;
+	const usz ucode_hash = fragment_program_utils::get_fragment_program_ucode_hash(program);
+	const u32 state_params[] =
+	{
+		program.ctrl,
+		program.two_sided_lighting ? 1u : 0u,
+		program.texture_state.texture_dimensions,
+		program.texture_state.shadow_textures,
+		program.texture_state.redirected_textures,
+		program.texture_state.multisampled_textures,
+		program.texcoord_control_mask,
+		program.mrt_buffers_count
+	};
+	const usz metadata_hash = rpcs3::hash_array(state_params);
+	return rpcs3::hash64(ucode_hash, metadata_hash);
 }
 
 bool fragment_program_compare::operator()(const RSXFragmentProgram& binary1, const RSXFragmentProgram& binary2) const
 {
-	if (binary1.ctrl != binary2.ctrl || binary1.texture_state != binary2.texture_state ||
+	if (binary1.ucode_length != binary2.ucode_length ||
+		binary1.ctrl != binary2.ctrl ||
+		binary1.texture_state != binary2.texture_state ||
 		binary1.texcoord_control_mask != binary2.texcoord_control_mask ||
-		binary1.two_sided_lighting != binary2.two_sided_lighting)
+		binary1.two_sided_lighting != binary2.two_sided_lighting ||
+		binary1.mrt_buffers_count != binary2.mrt_buffers_count)
+	{
 		return false;
+	}
 
 	const void* instBuffer1 = binary1.get_data();
 	const void* instBuffer2 = binary2.get_data();
@@ -547,7 +582,9 @@ bool fragment_program_compare::operator()(const RSXFragmentProgram& binary1, con
 		const auto inst2 = v128::loadu(instBuffer2, instIndex);
 
 		if (inst1._u ^ inst2._u)
+		{
 			return false;
+		}
 
 		instIndex++;
 		// Skip constants
@@ -556,8 +593,78 @@ bool fragment_program_compare::operator()(const RSXFragmentProgram& binary1, con
 			fragment_program_utils::is_constant(inst1._u32[3]))
 			instIndex++;
 
-		bool end = ((inst1._u32[0] >> 8) & 0x1) && ((inst2._u32[0] >> 8) & 0x1);
+		const bool end = ((inst1._u32[0] >> 8) & 0x1) && ((inst2._u32[0] >> 8) & 0x1);
 		if (end)
+		{
 			return true;
+		}
+	}
+}
+
+namespace rsx
+{
+#if defined(ARCH_X64) || defined(ARCH_ARM64)
+	static inline void write_fragment_constants_to_buffer_sse2(const std::span<f32>& buffer, const RSXFragmentProgram& rsx_prog, const std::vector<usz>& offsets_cache, bool sanitize)
+	{
+		f32* dst = buffer.data();
+		for (usz offset_in_fragment_program : offsets_cache)
+		{
+			char* data = static_cast<char*>(rsx_prog.get_data()) + offset_in_fragment_program;
+
+			const __m128i vector = _mm_loadu_si128(reinterpret_cast<__m128i*>(data));
+			const __m128i shuffled_vector = _mm_or_si128(_mm_slli_epi16(vector, 8), _mm_srli_epi16(vector, 8));
+
+			if (sanitize)
+			{
+				//Convert NaNs and Infs to 0
+				const auto masked = _mm_and_si128(shuffled_vector, _mm_set1_epi32(0x7fffffff));
+				const auto valid = _mm_cmplt_epi32(masked, _mm_set1_epi32(0x7f800000));
+				const auto result = _mm_and_si128(shuffled_vector, valid);
+				_mm_stream_si128(utils::bless<__m128i>(dst), result);
+			}
+			else
+			{
+				_mm_stream_si128(utils::bless<__m128i>(dst), shuffled_vector);
+			}
+
+			dst += 4;
+		}
+	}
+#else
+	static inline void write_fragment_constants_to_buffer_fallback(const std::span<f32>& buffer, const RSXFragmentProgram& rsx_prog, const std::vector<usz>& offsets_cache, bool sanitize)
+	{
+		f32* dst = buffer.data();
+
+		for (usz offset_in_fragment_program : offsets_cache)
+		{
+			char* data = static_cast<char*>(rsx_prog.get_data()) + offset_in_fragment_program;
+
+			for (u32 i = 0; i < 4; i++)
+			{
+				const u32 value = reinterpret_cast<u32*>(data)[i];
+				const u32 shuffled = ((value >> 8) & 0xff00ff) | ((value << 8) & 0xff00ff00);
+
+				if (sanitize && (shuffled & 0x7fffffff) >= 0x7f800000)
+				{
+					dst[i] = 0.f;
+				}
+				else
+				{
+					dst[i] = std::bit_cast<f32>(shuffled);
+				}
+			}
+
+			dst += 4;
+		}
+	}
+#endif
+
+	void write_fragment_constants_to_buffer(const std::span<f32>& buffer, const RSXFragmentProgram& rsx_prog, const std::vector<usz>& offsets_cache, bool sanitize)
+	{
+#if defined(ARCH_X64) || defined(ARCH_ARM64)
+		write_fragment_constants_to_buffer_sse2(buffer, rsx_prog, offsets_cache, sanitize);
+#else
+		write_fragment_constants_to_buffer_fallback(buffer, rsx_prog, offsets_cache, sanitize);
+#endif
 	}
 }

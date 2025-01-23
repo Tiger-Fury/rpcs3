@@ -23,7 +23,6 @@ namespace gui
 			mw_toggle_fullscreen,
 			mw_exit_fullscreen,
 			mw_refresh,
-			mw_welcome_dialog,
 
 			gw_toggle_fullscreen,
 			gw_exit_fullscreen,
@@ -36,6 +35,11 @@ namespace gui
 			gw_restart,
 			gw_rsx_capture,
 			gw_frame_limit,
+			gw_toggle_mouse_and_keyboard,
+			gw_home_menu,
+			gw_mute_unmute,
+			gw_volume_up,
+			gw_volume_down,
 
 			count
 		};
@@ -48,6 +52,7 @@ struct shortcut_info
 	QString localized_name;
 	QString key_sequence;
 	gui::shortcuts::shortcut_handler_id handler_id{};
+	bool allow_auto_repeat = false;
 };
 
 class shortcut_settings : public QObject

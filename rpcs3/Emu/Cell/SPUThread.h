@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Emu/CPU/CPUThread.h"
+#include "Emu/CPU/Hypervisor.h"
 #include "Emu/Cell/SPUInterpreter.h"
 #include "Emu/Memory/vm.h"
 #include "MFC.h"
@@ -176,18 +177,28 @@ enum : u32
 	SPU_FAKE_BASE_ADDR  = 0xE8000000,
 };
 
+struct spu_channel_op_state
+{
+	u8 old_count;
+	u8 count;
+	bool notify;
+	bool op_done;
+};
+
 struct alignas(16) spu_channel
 {
 	// Low 32 bits contain value
-	atomic_t<u64> data;
+	atomic_t<u64> data{};
 
 	// Pending value to be inserted when it is possible in pop() or pop_wait()
-	atomic_t<u64> jostling_value;
+	atomic_t<u64> jostling_value{};
 
 public:
 	static constexpr u32 off_wait  = 32;
+	static constexpr u32 off_occupy = 32;
 	static constexpr u32 off_count = 63;
 	static constexpr u64 bit_wait  = 1ull << off_wait;
+	static constexpr u64 bit_occupy = 1ull << off_occupy;
 	static constexpr u64 bit_count = 1ull << off_count;
 
 	// Returns true on success
@@ -207,20 +218,21 @@ public:
 
 	// Push unconditionally, may require notification
 	// Performing bitwise OR with previous value if specified, otherwise overwiting it
-	bool push(u32 value, bool to_or = false)
+	// Returns old count and new count
+	spu_channel_op_state push(u32 value, bool to_or = false, bool postpone_notify = false)
 	{
 		while (true)
 		{
 			const auto [old, pushed_to_data] = data.fetch_op([&](u64& data)
 			{
-				if (data == bit_wait)
+				if (data & bit_occupy)
 				{
 					return false;
 				}
 
 				if (to_or)
 				{
-					data |= bit_count | value;
+					data = bit_count | (static_cast<u32>(data) | value);
 				}
 				else
 				{
@@ -233,26 +245,42 @@ public:
 			if (!pushed_to_data)
 			{
 				// Insert the pending value in special storage for waiting SPUs, leave no time in which the channel has data
-				if (!jostling_value.compare_and_swap_test(bit_wait, value))
+				if (!jostling_value.compare_and_swap_test(bit_occupy, value))
 				{
 					// Other thread has inserted a value through jostling_value, retry
 					continue;
 				}
+			}
 
+			if (old & bit_wait)
+			{
 				// Turn off waiting bit manually (must succeed because waiting bit can only be resetted by the thread pushed to jostling_value)
-				ensure(this->data.bit_test_reset(off_wait));
-				utils::bless<atomic_t<u32>>(&data)[1].notify_one();
+				if (!this->data.bit_test_reset(off_wait))
+				{
+					// Could be fatal or at emulation stopping, to be checked by the caller
+					return { (old & bit_count) == 0, 0, false, false };
+				}
+
+				if (!postpone_notify)
+				{
+					utils::bless<atomic_t<u32>>(&data)[1].notify_one();
+				}
 			}
 
 			// Return true if count has changed from 0 to 1, this condition is considered satisfied even if we pushed a value directly to the special storage for waiting SPUs
-			return !pushed_to_data || (old & bit_count) == 0;
+			return { (old & bit_count) == 0, 1, (old & bit_wait) != 0, true };
 		}
+	}
+
+	void notify()
+	{
+		utils::bless<atomic_t<u32>>(&data)[1].notify_one();
 	}
 
 	// Returns true on success
 	bool try_pop(u32& out)
 	{
-		return data.fetch_op([&](u64& data)
+		return data.fetch_op([&out](u64& data)
 		{
 			if (data & bit_count) [[likely]]
 			{
@@ -284,7 +312,7 @@ public:
 	u32 pop()
 	{
 		// Value is not cleared and may be read again
-		constexpr u64 mask = bit_count | bit_wait;
+		constexpr u64 mask = bit_count | bit_occupy;
 
 		const u64 old = data.fetch_op([&](u64& data)
 		{
@@ -295,10 +323,10 @@ public:
 				return;
 			}
 
-			data &= ~mask;
+			data &= ~(mask | bit_wait);
 		});
 
-		if ((old & mask) == mask)
+		if (old & bit_wait)
 		{
 			utils::bless<atomic_t<u32>>(&data)[1].notify_one();
 		}
@@ -324,7 +352,7 @@ public:
 
 	u32 get_count() const
 	{
-		return static_cast<u32>(data >> off_count);
+		return (data & bit_count) ? 1 : 0;
 	}
 };
 
@@ -344,59 +372,26 @@ struct spu_channel_4_t
 	atomic_t<u64> jostling_value;
 	atomic_t<u32> value3;
 
-	static constexpr u32 off_wait  = 32;
+	static constexpr u32 off_wait  = 0;
+	static constexpr u32 off_occupy = 7;
 	static constexpr u64 bit_wait  = 1ull << off_wait;
+	static constexpr u64 bit_occupy = 1ull << off_occupy;
+	static constexpr u64 jostling_flag = 1ull << 63;
 
 	void clear()
 	{
 		values.release({});
+		jostling_value.release(0);
+		value3.release(0);
 	}
 
 	// push unconditionally (overwriting latest value), returns true if needs signaling
-	void push(u32 value)
+	// returning if could be aborted (operation failed unexpectedly)
+	spu_channel_op_state push(u32 value, bool postpone_notify = false);
+
+	void notify()
 	{
-		while (true)
-		{
-			value3.release(value);
-			const auto [old, pushed_to_data] = values.fetch_op([&](sync_var_t& data)
-			{
-				if (data.waiting)
-				{
-					return false;
-				}
-
-				switch (data.count++)
-				{
-				case 0: data.value0 = value; break;
-				case 1: data.value1 = value; break;
-				case 2: data.value2 = value; break;
-				default:
-				{
-					data.count = 4;
-					data.value3_inval++; // Ensure the SPU reads the most recent value3 write in try_pop by re-loading
-					break;
-				}
-				}
-
-				return true;
-			});
-
-			if (!pushed_to_data)
-			{
-				// Insert the pending value in special storage for waiting SPUs, leave no time in which the channel has data
-				if (!jostling_value.compare_and_swap_test(bit_wait, value))
-				{
-					// Other thread has inserted a value through jostling_value, retry
-					continue;
-				}
-
-				// Turn off waiting bit manually (must succeed because waiting bit can only be resetted by the thread pushing to jostling_value)
-				ensure(atomic_storage<u8>::exchange(values.raw().waiting, 0));
-				utils::bless<atomic_t<u32>>(&values)[0].notify_one();
-			}
-
-			return;
-		}
+		utils::bless<atomic_t<u32>>(&values)[0].notify_one();
 	}
 
 	// returns non-zero value on success: queue size before removal
@@ -422,7 +417,7 @@ struct spu_channel_4_t
 	}
 
 	// Returns [previous count, value] (if aborted 0 count is returned)
-	std::pair<u32, u32> pop_wait(cpu_thread& spu);
+	std::pair<u32, u32> pop_wait(cpu_thread& spu, bool pop_value = true);
 
 	// returns current queue size without modification
 	uint try_read(u32 (&out)[4]) const
@@ -443,7 +438,7 @@ struct spu_channel_4_t
 
 	u32 get_count() const
 	{
-		return std::as_const(values).raw().count;
+		return atomic_storage<u8>::load(std::as_const(values).raw().count);
 	}
 
 	void set_values(u32 count, u32 value0, u32 value1 = 0, u32 value2 = 0, u32 value3 = 0)
@@ -458,7 +453,7 @@ struct spu_int_ctrl_t
 	atomic_t<u64> mask;
 	atomic_t<u64> stat;
 
-	std::shared_ptr<struct lv2_int_tag> tag;
+	shared_ptr<struct lv2_int_tag> tag;
 
 	void set(u64 ints);
 
@@ -672,11 +667,11 @@ public:
 	u8* reserv_base_addr = vm::g_reservations;
 
 	// General-Purpose Registers
-	std::array<v128, 128> gpr;
-	SPU_FPSCR fpscr;
+	std::array<v128, 128> gpr{};
+	SPU_FPSCR fpscr{};
 
 	// MFC command data
-	spu_mfc_cmd ch_mfc_cmd;
+	spu_mfc_cmd ch_mfc_cmd{};
 
 	// MFC command queue
 	spu_mfc_cmd mfc_queue[16]{};
@@ -688,9 +683,9 @@ public:
 	u64 mfc_last_timestamp = 0;
 
 	// MFC proxy command data
-	spu_mfc_cmd mfc_prxy_cmd;
+	spu_mfc_cmd mfc_prxy_cmd{};
 	shared_mutex mfc_prxy_mtx;
-	atomic_t<u32> mfc_prxy_mask;
+	atomic_t<u32> mfc_prxy_mask = 0;
 
 	// Tracks writes to MFC proxy command data
 	union
@@ -712,11 +707,11 @@ public:
 	// Range Lock pointer
 	atomic_t<u64, 64>* range_lock{};
 
-	u32 srr0;
-	u32 ch_tag_upd;
-	u32 ch_tag_mask;
+	u32 srr0 = 0;
+	u32 ch_tag_upd = 0;
+	u32 ch_tag_mask = 0;
 	spu_channel ch_tag_stat;
-	u32 ch_stall_mask;
+	u32 ch_stall_mask = 0;
 	spu_channel ch_stall_stat;
 	spu_channel ch_atomic_stat;
 
@@ -741,14 +736,14 @@ public:
 	};
 
 	atomic_t<ch_events_t> ch_events;
-	bool interrupts_enabled;
+	bool interrupts_enabled = false;
 
-	u64 ch_dec_start_timestamp; // timestamp of writing decrementer value
-	u32 ch_dec_value; // written decrementer value
+	u64 ch_dec_start_timestamp = 0; // timestamp of writing decrementer value
+	u32 ch_dec_value = 0; // written decrementer value
 	bool is_dec_frozen = false;
 	std::pair<u32, u32> read_dec() const; // Read decrementer
 
-	atomic_t<u32> run_ctrl; // SPU Run Control register (only provided to get latest data written)
+	atomic_t<u32> run_ctrl = 0; // SPU Run Control register (only provided to get latest data written)
 	shared_mutex run_ctrl_mtx;
 
 	struct alignas(8) status_npc_sync_var
@@ -757,11 +752,11 @@ public:
 		u32 npc; // SPU Next Program Counter register
 	};
 
-	atomic_t<status_npc_sync_var> status_npc;
-	std::array<spu_int_ctrl_t, 3> int_ctrl; // SPU Class 0, 1, 2 Interrupt Management
+	atomic_t<status_npc_sync_var> status_npc{};
+	std::array<spu_int_ctrl_t, 3> int_ctrl{}; // SPU Class 0, 1, 2 Interrupt Management
 
-	std::array<std::pair<u32, std::shared_ptr<lv2_event_queue>>, 32> spuq; // Event Queue Keys for SPU Thread
-	std::shared_ptr<lv2_event_queue> spup[64]; // SPU Ports
+	std::array<std::pair<u32, shared_ptr<lv2_event_queue>>, 32> spuq{}; // Event Queue Keys for SPU Thread
+	shared_ptr<lv2_event_queue> spup[64]; // SPU Ports
 	spu_channel exit_status{}; // Threaded SPU exit status (not a channel, but the interface fits)
 	atomic_t<u32> last_exit_status; // Value to be written in exit_status after checking group termination
 	lv2_spu_group* const group; // SPU Thread Group (access by the spu threads in the group only! From other threads obtain a shared pointer to group using group ID)
@@ -772,6 +767,12 @@ public:
 	const u32 option; // sys_spu_thread_initialize option
 	const u32 lv2_id; // The actual id that is used by syscalls
 	u32 spurs_addr = 0;
+	bool spurs_waited = false;
+	bool spurs_entered_wait = false;
+	u64 spurs_wait_duration_last = 0;
+	u64 spurs_average_task_duration = 0;
+	u64 spurs_last_task_timestamp = 0;
+	static constexpr u64 spurs_task_count_to_calculate = 10;
 
 	spu_thread* next_cpu{}; // LV2 thread queues' node link
 
@@ -784,7 +785,7 @@ public:
 	u64 block_recover = 0;
 	u64 block_failure = 0;
 
-	u64 saved_native_sp = 0; // Host thread's stack pointer for emulated longjmp
+	rpcs3::hypervisor_context_t hv_ctx; // NOTE: The offset within the class must be within the first 1MiB
 
 	u64 ftx = 0; // Failed transactions
 	u64 stx = 0; // Succeeded transactions (pure counters)
@@ -824,7 +825,7 @@ public:
 	u32 current_bp_pc = umax;
 	bool stop_flag_removal_protection = false;
 
-	std::array<std::array<u8, 4>, SPU_LS_SIZE / 32> getllar_wait_time{};
+	std::array<std::array<u8, 4>, SPU_LS_SIZE / 128> getllar_wait_time{};
  
 	void push_snr(u32 number, u32 value);
 	static void do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8* ls);
@@ -887,6 +888,9 @@ public:
 	// Returns true if reservation existed but was just discovered to be lost
 	// It is safe to use on any address, even if not directly accessed by SPU (so it's slower)
 	bool reservation_check(u32 addr, const decltype(rdata)& data) const;
+	static bool reservation_check(u32 addr, u32 hash, atomic_t<u64, 64>* range_lock);
+	usz register_cache_line_waiter(u32 addr);
+	void deregister_cache_line_waiter(usz index);
 
 	bool read_reg(const u32 addr, u32& value);
 	bool write_reg(const u32 addr, const u32 value);
@@ -895,6 +899,8 @@ public:
 	static atomic_t<u32> g_raw_spu_ctr;
 	static atomic_t<u32> g_raw_spu_id[5];
 	static atomic_t<u32> g_spu_work_count;
+
+	static atomic_t<u64> g_spu_waiters_by_value[6];
 
 	static u32 find_raw_spu(u32 id)
 	{

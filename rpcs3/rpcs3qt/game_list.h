@@ -24,6 +24,7 @@ class game_list : public QTableWidget, public game_list_base
 public:
 	game_list();
 
+	void sync_header_actions(QList<QAction*>& actions, std::function<bool(int)> get_visibility);
 	void create_header_actions(QList<QAction*>& actions, std::function<bool(int)> get_visibility, std::function<void(int, bool)> set_visibility);
 
 	void clear_list() override; // Use this instead of clearContents
@@ -41,8 +42,9 @@ Q_SIGNALS:
 protected:
 	movie_item* m_last_hover_item = nullptr;
 
-	void mousePressEvent(QMouseEvent *event) override;
-	void mouseMoveEvent(QMouseEvent *event) override;
-	void keyPressEvent(QKeyEvent *event) override;
-	void leaveEvent(QEvent *event) override;
+	void mousePressEvent(QMouseEvent* event) override;
+	void mouseMoveEvent(QMouseEvent* event) override;
+	void mouseDoubleClickEvent(QMouseEvent* event) override;
+	void keyPressEvent(QKeyEvent* event) override;
+	void leaveEvent(QEvent* event) override;
 };

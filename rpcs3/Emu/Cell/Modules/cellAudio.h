@@ -251,7 +251,12 @@ struct cell_audio_config
 
 	static constexpr f32 period_average_alpha = 0.02f; // alpha factor for the m_average_period rolling average
 
-	static constexpr s64 period_comparison_margin = 250; // when comparing the current period time with the desired period, if it is below this number of usecs we do not wait any longer
+	// when comparing the current period time with the desired period, if it is below this number of usecs we do not wait any longer(quantum dependent)
+#ifdef _WIN32
+	static constexpr s64 period_comparison_margin = 250;
+#else
+	static constexpr s64 period_comparison_margin = 5;
+#endif
 
 	u64 fully_untouched_timeout = 0; // timeout if the game has not touched any audio buffer yet
 	u64 partially_untouched_timeout = 0; // timeout if the game has not touched all audio buffers yet
@@ -373,11 +378,6 @@ private:
 	void mix(float* out_buffer, s32 offset = 0);
 	void finish_port_volume_stepping();
 
-	constexpr static u64 get_thread_wait_delay(u64 time_left)
-	{
-		return (time_left > 350) ? time_left - 250 : 100;
-	}
-
 	void update_config(bool backend_changed);
 	void reset_counters();
 
@@ -400,7 +400,7 @@ public:
 		u32 flags = 0; // iFlags
 		u64 source = 0; // Event source
 		u64 ack_timestamp = 0; // timestamp of last call of cellAudioSendAck
-		std::shared_ptr<lv2_event_queue> port{}; // Underlying event port
+		shared_ptr<lv2_event_queue> port{}; // Underlying event port
 	};
 
 	std::vector<key_info> keys{};

@@ -13,10 +13,8 @@
 #include "SPUThread.h"
 #include "SPUAnalyser.h"
 #include "SPUInterpreter.h"
-#include "SPUDisAsm.h"
 #include <algorithm>
 #include <thread>
-#include <unordered_set>
 
 #include "util/v128.hpp"
 #include "util/simd.hpp"
@@ -65,6 +63,10 @@ const extern spu_decoder<spu_iflag> g_spu_iflag;
 #pragma warning(pop)
 #else
 #pragma GCC diagnostic pop
+#endif
+
+#ifdef ARCH_ARM64
+#include "Emu/CPU/Backends/AArch64/AArch64JIT.h"
 #endif
 
 class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
@@ -120,7 +122,6 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 
 	// Global LUTs
 	llvm::GlobalVariable* m_spu_frest_fraction_lut{};
-	llvm::GlobalVariable* m_spu_frest_exponent_lut{};
 	llvm::GlobalVariable* m_spu_frsqest_fraction_lut{};
 	llvm::GlobalVariable* m_spu_frsqest_exponent_lut{};
 
@@ -403,7 +404,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 	llvm::BasicBlock* add_block(u32 target, bool absolute = false)
 	{
 		// Check the predecessor
-		const bool pred_found = m_block_info[target / 4] && m_preds[target].find_first_of(m_pos) + 1;
+		const bool pred_found = m_block_info[target / 4] && std::find(m_preds[target].begin(), m_preds[target].end(), m_pos) != m_preds[target].end();
 
 		if (m_blocks.empty())
 		{
@@ -540,9 +541,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 	template <typename T = u8>
 	llvm::Value* _ptr(llvm::Value* base, llvm::Value* offset)
 	{
-		const auto off = m_ir->CreateGEP(get_type<u8>(), base, offset);
-		const auto ptr = m_ir->CreateBitCast(off, get_type<T*>());
-		return ptr;
+		return m_ir->CreateGEP(get_type<u8>(), base, offset);
 	}
 
 	template <typename T, typename... Args>
@@ -1192,7 +1191,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 
 		if (g_cfg.core.rsx_accurate_res_access)
 		{
-			call("spu_putllc16_rsx_res", +[](spu_thread* _spu, u32 ls_dst, u32 lsa, u32 eal, u32 notify)
+			const auto success = call("spu_putllc16_rsx_res", +[](spu_thread* _spu, u32 ls_dst, u32 lsa, u32 eal, u32 notify) -> bool
 			{
 				const u32 raddr = eal;
 
@@ -1201,72 +1200,53 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 
 				const auto dest = raddr | (ls_dst & 127);
 				const auto _dest = vm::get_super_ptr<atomic_t<nse_t<v128>>>(dest);
-				using spu_rdata_t = decltype(spu_thread::rdata);
-
-				extern bool cmp_rdata(const spu_rdata_t& _lhs, const spu_rdata_t& _rhs);
-
-				// if (!cmp_rdata(*reinterpret_cast<const decltype(_spu->rdata)*>(_dest), _spu->rdata))
-				// {
-				// 	_spu->ch_atomic_stat.set_value(MFC_PUTLLC_FAILURE);
-				// 	_spu->set_events(SPU_EVENT_LR);
-				// 	_spu->raddr = 0;
-				// 	return;
-				// }
 
 				if (rdata == to_write || ((lsa ^ ls_dst) & (SPU_LS_SIZE - 128)))
 				{
 					vm::reservation_update(raddr);
 					_spu->ch_atomic_stat.set_value(MFC_PUTLLC_SUCCESS);
 					_spu->raddr = 0;
-					return;
+					return true;
 				}
 
-				const u64 rtime = _spu->rtime;
 				auto& res = vm::reservation_acquire(eal);
 
-				if (res != rtime)
+				if (res % 128)
 				{
-					_spu->ch_atomic_stat.set_value(MFC_PUTLLC_FAILURE);
-					_spu->set_events(SPU_EVENT_LR);
-					_spu->raddr = 0;
-					return;
+					return false;
 				}
 
-				rsx::reservation_lock rsx_lock(raddr, 128);
-
-				// Touch memory
-				utils::trigger_write_page_fault(vm::base(dest ^ (4096 / 2)));
-
-				auto [old_res, ok] = res.fetch_op([&](u64& rval)
 				{
-					if (rtime != rval)
+					rsx::reservation_lock rsx_lock(raddr, 128);
+
+					// Touch memory
+					utils::trigger_write_page_fault(vm::base(dest ^ (4096 / 2)));
+
+					auto [old_res, ok] = res.fetch_op([&](u64& rval)
+					{
+						if (rval % 128)
+						{
+							return false;
+						}
+
+						rval |= 127;
+						return true;
+					});
+
+					if (!ok)
 					{
 						return false;
 					}
 
-					rval |= 127;
-					return true;
-				});
+					if (!_dest->compare_and_swap_test(rdata, to_write))
+					{
+						res.release(old_res);
+						return false;
+					}
 
-				if (!ok)
-				{
-					_spu->ch_atomic_stat.set_value(MFC_PUTLLC_FAILURE);
-					_spu->set_events(SPU_EVENT_LR);
-					_spu->raddr = 0;
-					return;
+					// Success
+					res.release(old_res + 128);
 				}
-
-				if (!_dest->compare_and_swap_test(rdata, to_write))
-				{
-					res.release(old_res);
-					_spu->ch_atomic_stat.set_value(MFC_PUTLLC_FAILURE);
-					_spu->set_events(SPU_EVENT_LR);
-					_spu->raddr = 0;
-					return;
-				}
-
-				// Success
-				res.release(old_res + 128);
 
 				_spu->ch_atomic_stat.set_value(MFC_PUTLLC_SUCCESS);
 				_spu->raddr = 0;
@@ -1275,10 +1255,12 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 				{
 					res.notify_all();
 				}
+
+				return true;
 			}, m_thread, dest, _lsa, _eal, m_ir->getInt32(!info.no_notify));
 
 
-			m_ir->CreateBr(_final);
+			m_ir->CreateCondBr(success, _final, _fail);
 
 			m_ir->SetInsertPoint(_fail);
 			call("PUTLLC16_fail", +on_fail, m_thread, _eal);
@@ -1485,14 +1467,41 @@ public:
 			// Metadata for branch weights
 			m_md_likely = llvm::MDTuple::get(m_context, {md_name, md_high, md_low});
 			m_md_unlikely = llvm::MDTuple::get(m_context, {md_name, md_low, md_high});
+
+			// Initialize transform passes
+			clear_transforms();
+#ifdef ARCH_ARM64
+			{
+				auto should_exclude_function = [](const std::string& fn_name)
+				{
+					return fn_name.starts_with("spu_") || fn_name.starts_with("tr_");
+				};
+
+				aarch64::GHC_frame_preservation_pass::config_t config =
+				{
+					.debug_info = false,         // Set to "true" to insert debug frames on x27
+					.use_stack_frames = false,   // We don't need this since the SPU GW allocates global scratch on the stack
+					.hypervisor_context_offset = ::offset32(&spu_thread::hv_ctx),
+					.exclusion_callback = should_exclude_function,
+					.base_register_lookup = {}   // Unused, always x19 on SPU
+				};
+
+				// Create transform pass
+				std::unique_ptr<translator_pass> ghc_fixup_pass = std::make_unique<aarch64::GHC_frame_preservation_pass>(config);
+
+				// Register it
+				register_transform_pass(ghc_fixup_pass);
+			}
+#endif
 		}
+
+		reset_transforms();
 	}
 
 	void init_luts()
 	{
 		// LUTs for some instructions
 		m_spu_frest_fraction_lut = new llvm::GlobalVariable(*m_module, llvm::ArrayType::get(GetType<u32>(), 32), true, llvm::GlobalValue::PrivateLinkage, llvm::ConstantDataArray::get(m_context, spu_frest_fraction_lut));
-		m_spu_frest_exponent_lut = new llvm::GlobalVariable(*m_module, llvm::ArrayType::get(GetType<u32>(), 256), true, llvm::GlobalValue::PrivateLinkage, llvm::ConstantDataArray::get(m_context, spu_frest_exponent_lut));
 		m_spu_frsqest_fraction_lut = new llvm::GlobalVariable(*m_module, llvm::ArrayType::get(GetType<u32>(), 64), true, llvm::GlobalValue::PrivateLinkage, llvm::ConstantDataArray::get(m_context, spu_frsqest_fraction_lut));
 		m_spu_frsqest_exponent_lut = new llvm::GlobalVariable(*m_module, llvm::ArrayType::get(GetType<u32>(), 256), true, llvm::GlobalValue::PrivateLinkage, llvm::ConstantDataArray::get(m_context, spu_frsqest_exponent_lut));
 	}
@@ -2042,7 +2051,7 @@ public:
 						{
 							const auto tfound = m_targets.find(m_pos);
 
-							if (tfound == m_targets.end() || tfound->second.find_first_of(target) + 1 == 0)
+							if (tfound == m_targets.end() || std::find(tfound->second.begin(), tfound->second.end(), target) == tfound->second.end())
 							{
 								spu_log.error("[%s] Unregistered fallthrough to 0x%x (chunk=0x%x, entry=0x%x)", m_hash, target, m_entry, m_function_queue[0]);
 							}
@@ -2340,7 +2349,6 @@ public:
 						}
 
 						bool has_gpr_barriers_in_the_way = false;
-						bool potential_loop = false;
 
 						for (auto [a2, b2] : sucs)
 						{
@@ -2352,7 +2360,6 @@ public:
 									break;
 								}
 
-								potential_loop = true;
 								continue;
 							}
 
@@ -2392,7 +2399,6 @@ public:
 									break;
 								}
 
-								potential_loop = true;
 								continue;
 							}
 
@@ -2424,12 +2430,6 @@ public:
 						if (has_gpr_barriers_in_the_way)
 						{
 							// Cannot sink store, has barriers in the way
-							continue;
-						}
-
-						if (!potential_loop)
-						{
-							spu_log.trace("Avoided postponing r%u store from block 0x%x (not loop)", i, block_q[bi].first);
 							continue;
 						}
 
@@ -2614,7 +2614,7 @@ public:
 
 		for (auto& f : *m_module)
 		{
-			replace_intrinsics(f);
+			run_transforms(f);
 		}
 
 		for (const auto& func : m_functions)
@@ -2815,7 +2815,7 @@ public:
 		m_interp_regs = _ptr(m_thread, get_reg_offset(0));
 
 		// Save host thread's stack pointer
-		const auto native_sp = spu_ptr<u64>(&spu_thread::saved_native_sp);
+		const auto native_sp = spu_ptr<u64>(&spu_thread::hv_ctx, &rpcs3::hypervisor_context_t::regs);
 #if defined(ARCH_X64)
 		const auto rsp_name = MetadataAsValue::get(m_context, MDNode::get(m_context, {MDString::get(m_context, "rsp")}));
 #elif defined(ARCH_ARM64)
@@ -3098,7 +3098,7 @@ public:
 
 		for (auto& f : *_module)
 		{
-			replace_intrinsics(f);
+			run_transforms(f);
 		}
 
 		std::string log;
@@ -3484,12 +3484,31 @@ public:
 		const auto val = m_ir->CreateLoad(get_type<u64>(), _ptr<u64>(m_thread, off));
 		val->setAtomic(llvm::AtomicOrdering::Acquire);
 		const auto shv = m_ir->CreateLShr(val, spu_channel::off_count);
-		return m_ir->CreateTrunc(m_ir->CreateXor(shv, u64{inv}), get_type<u32>());
+		return m_ir->CreateTrunc(m_ir->CreateXor(shv, inv), get_type<u32>());
+	}
+
+	llvm::Value* wait_rchcnt(u32 off, u32 inv = 0)
+	{
+		auto wait_on_channel = [](spu_thread* _spu, spu_channel* ch, u32 is_read) -> u32
+		{
+			if (is_read)
+			{
+				ch->pop_wait(*_spu, false);
+			}
+			else
+			{
+				ch->push_wait(*_spu, 0, false);
+			}
+
+			return ch->get_count();
+		};
+
+		return m_ir->CreateXor(call("wait_on_spu_channel", +wait_on_channel, m_thread, _ptr<u64>(m_thread, off), m_ir->getInt32(inv == 0u)), m_ir->getInt32(inv));
 	}
 
 	void RCHCNT(spu_opcode_t op) //
 	{
-		value_t<u32> res;
+		value_t<u32> res{};
 
 		if (m_interp_magn)
 		{
@@ -3530,6 +3549,50 @@ public:
 		{
 			break;
 		}
+		}
+
+		if (m_inst_attrs[(m_pos - m_base) / 4] == inst_attr::rchcnt_loop)
+		{
+			switch (op.ra)
+			{
+			case SPU_WrOutMbox:
+			{
+				res.value = wait_rchcnt(::offset32(&spu_thread::ch_out_mbox), true);
+				break;
+			}
+			case SPU_WrOutIntrMbox:
+			{
+				res.value = wait_rchcnt(::offset32(&spu_thread::ch_out_intr_mbox), true);
+				break;
+			}
+			case SPU_RdSigNotify1:
+			{
+				res.value = wait_rchcnt(::offset32(&spu_thread::ch_snr1));
+				break;
+			}
+			case SPU_RdSigNotify2:
+			{
+				res.value = wait_rchcnt(::offset32(&spu_thread::ch_snr2));
+				break;
+			}
+			case SPU_RdInMbox:
+			{
+				auto wait_inbox = [](spu_thread* _spu, spu_channel_4_t* ch) -> u32
+				{
+					return ch->pop_wait(*_spu, false), ch->get_count();
+				};
+
+				res.value = call("wait_spu_inbox", +wait_inbox, m_thread, spu_ptr<void*>(&spu_thread::ch_in_mbox));
+				break;
+			}
+			default: break;
+			}
+
+			if (res.value)
+			{
+				set_vr(op.rt, insert(splat<u32[4]>(0), 3, res));
+				return;
+			}
 		}
 
 		switch (op.ra)
@@ -3758,8 +3821,8 @@ public:
 				m_ir->CreateStore(stat_val, stat_ptr);
 				m_ir->CreateBr(next);
 				m_ir->SetInsertPoint(next);
-				return;
 			}
+			return;
 		}
 		case MFC_LSA:
 		{
@@ -4603,35 +4666,44 @@ public:
 		return zshuffle(std::forward<TA>(a), 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
 	}
 
+	template <typename T, typename U>
+	static llvm_calli<u8[16], T, U> rotqbybi(T&& a, U&& b)
+	{
+		return {"spu_rotqbybi", {std::forward<T>(a), std::forward<U>(b)}};
+	}
+
 	void ROTQBYBI(spu_opcode_t op)
 	{
-		const auto a = get_vr<u8[16]>(op.ra);
-
-		// Data with swapped endian from a load instruction
-		if (auto [ok, as] = match_expr(a, byteswap(match<u8[16]>())); ok)
+		register_intrinsic("spu_rotqbybi", [&](llvm::CallInst* ci)
 		{
-			const auto sc = build<u8[16]>(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
-			const auto sh = sc + (splat_scalar(get_vr<u8[16]>(op.rb)) >> 3);
+			const auto a = value<u8[16]>(ci->getOperand(0));
+			const auto b = value<u8[16]>(ci->getOperand(1));
+
+			// Data with swapped endian from a load instruction
+			if (auto [ok, as] = match_expr(a, byteswap(match<u8[16]>())); ok)
+			{
+				const auto sc = build<u8[16]>(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+				const auto sh = sc + (splat_scalar(b) >> 3);
+
+				if (m_use_avx512_icl)
+				{
+					return eval(vpermb(as, sh));
+				}
+
+				return eval(pshufb(as, (sh & 0xf)));
+			}
+			const auto sc = build<u8[16]>(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+			const auto sh = sc - (splat_scalar(b) >> 3);
 
 			if (m_use_avx512_icl)
 			{
-				set_vr(op.rt, vpermb(as, sh));
-				return;
+				return eval(vpermb(a, sh));
 			}
 
-			set_vr(op.rt, pshufb(as, (sh & 0xf)));
-			return;
-		}
-		const auto sc = build<u8[16]>(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
-		const auto sh = sc - (splat_scalar(get_vr<u8[16]>(op.rb)) >> 3);
+			return eval(pshufb(a, (sh & 0xf)));
+		});
 
-		if (m_use_avx512_icl)
-		{
-			set_vr(op.rt, vpermb(a, sh));
-			return;
-		}
-
-		set_vr(op.rt, pshufb(a, (sh & 0xf)));
+		set_vr(op.rt, rotqbybi(get_vr<u8[16]>(op.ra), get_vr<u8[16]>(op.rb)));
 	}
 
 	void ROTQMBYBI(spu_opcode_t op)
@@ -4750,6 +4822,39 @@ public:
 	void ROTQBI(spu_opcode_t op)
 	{
 		const auto a = get_vr(op.ra);
+		const auto ax = get_vr<u8[16]>(op.ra);
+		const auto bx = get_vr<u8[16]>(op.rb);
+
+		// Combined bit and bytes shift
+		if (auto [ok, v0, v1] = match_expr(ax, rotqbybi(match<u8[16]>(), match<u8[16]>())); ok && v1.eq(bx))
+		{
+			const auto b32 = get_vr<s32[4]>(op.rb);
+
+			// Is the rotate less than 31 bits?
+			if (auto k = get_known_bits(b32); (k.Zero & 0x60) == 0x60u)
+			{
+				const auto b = splat_scalar(get_vr(op.rb));
+				set_vr(op.rt, fshl(bitcast<u32[4]>(v0), zshuffle(bitcast<u32[4]>(v0), 3, 0, 1, 2), b));
+				return;
+			}
+
+			// Inverted shift count
+			if (auto [ok1, v10, v11] = match_expr(b32, match<s32[4]>() - match<s32[4]>()); ok1)
+			{
+				if (auto [ok2, data] = get_const_vector(v10.value, m_pos); ok2)
+				{
+					if ((data & v128::from32p(0x7f)) == v128{})
+					{
+						if (auto k = get_known_bits(v11); (k.Zero & 0x60) == 0x60u)
+						{
+							set_vr(op.rt, fshr(zshuffle(bitcast<u32[4]>(v0), 1, 2, 3, 0), bitcast<u32[4]>(v0), splat_scalar(bitcast<u32[4]>(v11))));
+							return;
+						}
+					}
+				}
+			}
+		}
+
 		const auto b = splat_scalar(get_vr(op.rb) & 0x7);
 		set_vr(op.rt, fshl(a, zshuffle(a, 3, 0, 1, 2), b));
 	}
@@ -5971,23 +6076,24 @@ public:
 			const auto a = bitcast<u32[4]>(value<f32[4]>(ci->getOperand(0)));
 
 			const auto a_fraction = (a >> splat<u32[4]>(18)) & splat<u32[4]>(0x1F);
-			const auto a_exponent = (a >> splat<u32[4]>(23)) & splat<u32[4]>(0xFF);
+			const auto a_exponent = (a & splat<u32[4]>(0x7F800000u));
+			const auto r_exponent = sub_sat(build<u16[8]>(0000, 0x7E80, 0000, 0x7E80, 0000, 0x7E80, 0000, 0x7E80), bitcast<u16[8]>(a_exponent));
+			const auto fix_exponent = select((a_exponent > 0), bitcast<u32[4]>(r_exponent), splat<u32[4]>(0x7F800000u));
 			const auto a_sign = (a & splat<u32[4]>(0x80000000));
 			value_t<u32[4]> final_result = eval(splat<u32[4]>(0));
 
 			for (u32 i = 0; i < 4; i++)
 			{
 				const auto eval_fraction = eval(extract(a_fraction, i));
-				const auto eval_exponent = eval(extract(a_exponent, i));
-				const auto eval_sign = eval(extract(a_sign, i));
 
 				value_t<u32> r_fraction = load_const<u32>(m_spu_frest_fraction_lut, eval_fraction);
-				value_t<u32> r_exponent = load_const<u32>(m_spu_frest_exponent_lut, eval_exponent);
 
-				final_result = eval(insert(final_result, i, eval(r_fraction | eval_sign | r_exponent)));
+				final_result = eval(insert(final_result, i, r_fraction));
 			}
 
-			return bitcast<f32[4]>(final_result);
+			//final_result = eval(select(final_result != (0), final_result, bitcast<u32[4]>(pshufb(splat<u8[16]>(0), bitcast<u8[16]>(final_result)))));
+
+			return bitcast<f32[4]>(bitcast<u32[4]>(final_result | bitcast<u32[4]>(fix_exponent) | a_sign));
 		});
 
 		set_vr(op.rt, frest(get_vr<f32[4]>(op.ra)));
@@ -6635,24 +6741,39 @@ public:
 			}
 		});
 
-		register_intrinsic("spu_re_acc", [&](llvm::CallInst* ci)
+		if (m_use_avx512)
 		{
-			const auto div = value<f32[4]>(ci->getOperand(0));
-			const auto the_one = value<f32[4]>(ci->getOperand(1));
+			register_intrinsic("spu_re_acc", [&](llvm::CallInst* ci)
+			{
+				const auto div = value<f32[4]>(ci->getOperand(0));
+				const auto the_one = value<f32[4]>(ci->getOperand(1));
 
-			const auto div_result = the_one / div;
+				const auto div_result = the_one / div;
 
-			// from ps3 hardware testing: Inf => NaN and NaN => Zero
-			const auto result_and = bitcast<u32[4]>(div_result) & 0x7fffffffu;
-			const auto result_cmp_inf = sext<s32[4]>(result_and == splat<u32[4]>(0x7F800000u));
-			const auto result_cmp_nan = sext<s32[4]>(result_and <= splat<u32[4]>(0x7F800000u));
+				return vfixupimmps(bitcast<f32[4]>(splat<u32[4]>(0xFFFFFFFFu)), div_result, splat<u32[4]>(0x11001188u), 0, 0xff);
+			});	
+		}
+		else
+		{
+			register_intrinsic("spu_re_acc", [&](llvm::CallInst* ci)
+			{			
+				const auto div = value<f32[4]>(ci->getOperand(0));
+				const auto the_one = value<f32[4]>(ci->getOperand(1));
 
-			const auto and_mask = bitcast<u32[4]>(result_cmp_nan) & splat<u32[4]>(0xFFFFFFFFu);
-			const auto or_mask = bitcast<u32[4]>(result_cmp_inf) & splat<u32[4]>(0xFFFFFFFu);
+				const auto div_result = the_one / div;
 
-			return bitcast<f32[4]>((bitcast<u32[4]>(div_result) & and_mask) | or_mask);
-		});
+				// from ps3 hardware testing: Inf => NaN and NaN => Zero
+				const auto result_and = bitcast<u32[4]>(div_result) & 0x7fffffffu;
+				const auto result_cmp_inf = sext<s32[4]>(result_and == splat<u32[4]>(0x7F800000u));
+				const auto result_cmp_nan = sext<s32[4]>(result_and <= splat<u32[4]>(0x7F800000u));
 
+				const auto and_mask = bitcast<u32[4]>(result_cmp_nan) & splat<u32[4]>(0xFFFFFFFFu);
+				const auto or_mask = bitcast<u32[4]>(result_cmp_inf) & splat<u32[4]>(0xFFFFFFFu);
+				return bitcast<f32[4]>((bitcast<u32[4]>(div_result) & and_mask) | or_mask);
+			});
+		}
+
+		
 		const auto [a, b, c] = get_vrs<f32[4]>(op.ra, op.rb, op.rc);
 		static const auto MT = match<f32[4]>();
 
@@ -6935,19 +7056,22 @@ public:
 			{
 				const auto a = bitcast<u32[4]>(value<f32[4]>(ci->getOperand(0)));
 				const auto a_fraction = (a >> splat<u32[4]>(18)) & splat<u32[4]>(0x1F);
-				const auto a_exponent = (a >> splat<u32[4]>(23)) & splat<u32[4]>(0xFF);
+				const auto a_exponent = (a & splat<u32[4]>(0x7F800000u));
+				const auto r_exponent = sub_sat(build<u16[8]>(0000, 0x7E80, 0000, 0x7E80, 0000, 0x7E80, 0000, 0x7E80), bitcast<u16[8]>(a_exponent));
+				const auto fix_exponent = select((a_exponent > 0), bitcast<u32[4]>(r_exponent), splat<u32[4]>(0x7F800000u));
 				const auto a_sign = (a & splat<u32[4]>(0x80000000));
 				value_t<u32[4]> b = eval(splat<u32[4]>(0));
 
 				for (u32 i = 0; i < 4; i++)
 				{
 					const auto eval_fraction = eval(extract(a_fraction, i));
-					const auto eval_exponent = eval(extract(a_exponent, i));
-					const auto eval_sign = eval(extract(a_sign, i));
+
 					value_t<u32> r_fraction = load_const<u32>(m_spu_frest_fraction_lut, eval_fraction);
-					value_t<u32> r_exponent = load_const<u32>(m_spu_frest_exponent_lut, eval_exponent);
-					b = eval(insert(b, i, eval(r_fraction | eval_sign | r_exponent)));
+
+					b = eval(insert(b, i, r_fraction));
 				}
+
+				b = eval(b | fix_exponent | a_sign);
 
 				const auto base = (b & 0x007ffc00u) << 9; // Base fraction
 				const auto ymul = (b & 0x3ff) * (a & 0x7ffff); // Step fraction * Y fraction (fixed point at 2^-32)

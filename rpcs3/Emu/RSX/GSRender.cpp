@@ -18,7 +18,7 @@ GSRender::~GSRender()
 {
 	m_context = nullptr;
 
-	if (m_frame)
+	if (m_frame && !m_continuous_mode)
 	{
 		m_frame->close();
 	}
@@ -39,7 +39,10 @@ void GSRender::on_exit()
 
 	if (m_frame)
 	{
-		m_frame->hide();
+		if (!m_continuous_mode)
+		{
+			m_frame->hide();
+		}
 		m_frame->delete_context(m_context);
 		m_context = nullptr;
 	}
@@ -51,4 +54,15 @@ void GSRender::flip(const rsx::display_flip_info_t&)
 	{
 		m_frame->flip(m_context);
 	}
+}
+
+f64 GSRender::get_display_refresh_rate() const
+{
+	if (m_frame)
+	{
+		return m_frame->client_display_rate();
+	}
+
+	// Minimum
+	return 20.;
 }

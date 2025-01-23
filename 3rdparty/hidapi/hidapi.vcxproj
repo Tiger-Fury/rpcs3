@@ -44,13 +44,13 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
-    <OutDir>$(SolutionDir)lib\$(Configuration)-$(Platform)/</OutDir>
-    <IntDir>$(SolutionDir)tmp\$(ProjectName)-$(Configuration)-$(Platform)/</IntDir>
+    <OutDir>$(SolutionDir)build\lib\$(Configuration)-$(Platform)\</OutDir>
+    <IntDir>$(SolutionDir)build\tmp\$(ProjectName)-$(Configuration)-$(Platform)\</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <OutDir>$(SolutionDir)lib\$(Configuration)-$(Platform)/</OutDir>
-    <IntDir>$(SolutionDir)tmp\$(ProjectName)-$(Configuration)-$(Platform)/</IntDir>
+    <OutDir>$(SolutionDir)build\lib\$(Configuration)-$(Platform)\</OutDir>
+    <IntDir>$(SolutionDir)build\tmp\$(ProjectName)-$(Configuration)-$(Platform)\</IntDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -100,6 +100,17 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="hidapi\hidapi\hidapi.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="hidapi\linux\hid.c" />
+    <None Include="hidapi\mac\hid.c" />
+    <None Include="hidapi\windows\hidapi_descriptor_reconstruct.c" />
+    <None Include="hidapi\mac\hidapi_darwin.h" />
+    <None Include="hidapi\windows\hidapi_descriptor_reconstruct.h" />
+    <None Include="hidapi\windows\hidapi_hidclass.h" />
+    <None Include="hidapi\windows\hidapi_hidpi.h" />
+    <None Include="hidapi\windows\hidapi_hidsdi.h" />
+    <None Include="hidapi\windows\hidapi_winapi.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

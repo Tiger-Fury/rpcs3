@@ -33,8 +33,10 @@ public:
 	void close();
 
 	hid_device* hidDevice{nullptr};
+#ifdef _WIN32
+	hid_device* bt_device{nullptr}; // Used in ps move handler
+#endif
 	std::string path;
-	bool new_output_data{true};
 	bool enable_player_leds{false};
 	u8 led_delay_on{0};
 	u8 led_delay_off{0};

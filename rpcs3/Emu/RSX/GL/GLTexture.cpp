@@ -3,6 +3,7 @@
 #include "GLCompute.h"
 #include "GLRenderTargets.h"
 #include "GLOverlays.h"
+#include "GLGSRender.h"
 
 #include "glutils/blitter.h"
 #include "glutils/ring_buffer.h"
@@ -285,7 +286,7 @@ namespace gl
 			if (!(*dst) || max_mem > static_cast<u64>(dst->size()))
 			{
 				if (*dst) dst->remove();
-				dst->create(buffer::target::ssbo, max_mem, nullptr, buffer::memory_type::local, GL_STATIC_COPY);
+				dst->create(buffer::target::ssbo, max_mem, nullptr, buffer::memory_type::local, 0);
 			}
 
 			if (auto as_vi = dynamic_cast<const gl::viewable_image*>(src);
@@ -400,7 +401,7 @@ namespace gl
 				return;
 			}
 
-			scratch_mem.create(buffer::target::pixel_pack, max_mem, nullptr, buffer::memory_type::local, GL_STATIC_COPY);
+			scratch_mem.create(buffer::target::pixel_pack, max_mem, nullptr, buffer::memory_type::local, 0);
 
 			glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 			src->copy_to(&scratch_mem, in_offset, 0, mem_info->image_size_in_bytes);
@@ -807,37 +808,9 @@ namespace gl
 		}
 	}
 
-	std::array<GLenum, 4> apply_swizzle_remap(const std::array<GLenum, 4>& swizzle_remap, const std::pair<std::array<u8, 4>, std::array<u8, 4>>& decoded_remap)
+	std::array<GLenum, 4> apply_swizzle_remap(const std::array<GLenum, 4>& swizzle_remap, const rsx::texture_channel_remap_t& decoded_remap)
 	{
-		//Remapping tables; format is A-R-G-B
-		//Remap input table. Contains channel index to read color from
-		const auto remap_inputs = decoded_remap.first;
-
-		//Remap control table. Controls whether the remap value is used, or force either 0 or 1
-		const auto remap_lookup = decoded_remap.second;
-
-		std::array<GLenum, 4> remap_values;
-
-		for (u8 channel = 0; channel < 4; ++channel)
-		{
-			switch (remap_lookup[channel])
-			{
-			default:
-				rsx_log.error("Unknown remap function 0x%X", remap_lookup[channel]);
-				[[fallthrough]];
-			case CELL_GCM_TEXTURE_REMAP_REMAP:
-				remap_values[channel] = swizzle_remap[remap_inputs[channel]];
-				break;
-			case CELL_GCM_TEXTURE_REMAP_ZERO:
-				remap_values[channel] = GL_ZERO;
-				break;
-			case CELL_GCM_TEXTURE_REMAP_ONE:
-				remap_values[channel] = GL_ONE;
-				break;
-			}
-		}
-
-		return remap_values;
+		return decoded_remap.remap<GLenum>(swizzle_remap, GL_ZERO, GL_ONE);
 	}
 
 	void upload_texture(gl::command_context& cmd, texture* dst, u32 gcm_format, bool is_swizzled, const std::vector<rsx::subresource_layout>& subresources_layout)
@@ -863,6 +836,10 @@ namespace gl
 		const GLenum gl_format = std::get<0>(format_type);
 		const GLenum gl_type = std::get<1>(format_type);
 		fill_texture(cmd, dst, gcm_format, subresources_layout, is_swizzled, gl_format, gl_type, data_upload_buf);
+
+		// Notify the renderer of the upload
+		auto renderer = static_cast<GLGSRender*>(rsx::get_current_renderer());
+		renderer->on_guest_texture_read();
 	}
 
 	u32 get_format_texel_width(GLenum format)

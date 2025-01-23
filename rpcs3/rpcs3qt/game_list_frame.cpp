@@ -70,9 +70,9 @@ game_list_frame::game_list_frame(std::shared_ptr<gui_settings> gui_settings, std
 	m_old_layout_is_list = m_is_list_layout;
 
 	// Save factors for first setup
-	m_gui_settings->SetValue(gui::gl_iconColor, m_icon_color);
-	m_gui_settings->SetValue(gui::gl_marginFactor, m_margin_factor);
-	m_gui_settings->SetValue(gui::gl_textFactor, m_text_factor);
+	m_gui_settings->SetValue(gui::gl_iconColor, m_icon_color, false);
+	m_gui_settings->SetValue(gui::gl_marginFactor, m_margin_factor, false);
+	m_gui_settings->SetValue(gui::gl_textFactor, m_text_factor, true);
 
 	m_game_dock = new QMainWindow(this);
 	m_game_dock->setWindowFlags(Qt::Widget);
@@ -230,12 +230,7 @@ void game_list_frame::LoadSettings()
 	m_show_custom_icons = m_gui_settings->GetValue(gui::gl_custom_icon).toBool();
 	m_play_hover_movies = m_gui_settings->GetValue(gui::gl_hover_gifs).toBool();
 
-	for (int col = 0; col < m_columnActs.count(); ++col)
-	{
-		const bool vis = m_gui_settings->GetGamelistColVisibility(static_cast<gui::game_list_columns>(col));
-		m_columnActs[col]->setChecked(vis);
-		m_game_list->setColumnHidden(col, !vis);
-	}
+	m_game_list->sync_header_actions(m_columnActs, [this](int col) { return m_gui_settings->GetGamelistColVisibility(static_cast<gui::game_list_columns>(col)); });
 }
 
 game_list_frame::~game_list_frame()
@@ -260,10 +255,10 @@ void game_list_frame::OnColClicked(int col)
 	}
 	m_sort_column = col;
 
-	m_gui_settings->SetValue(gui::gl_sortAsc, m_col_sort_order == Qt::AscendingOrder);
-	m_gui_settings->SetValue(gui::gl_sortCol, col);
+	m_gui_settings->SetValue(gui::gl_sortAsc, m_col_sort_order == Qt::AscendingOrder, false);
+	m_gui_settings->SetValue(gui::gl_sortCol, col, true);
 
-	m_game_list->sort(m_game_data.count(), m_sort_column, m_col_sort_order);
+	m_game_list->sort(m_game_data.size(), m_sort_column, m_col_sort_order);
 }
 
 // Get visibility of entries
@@ -282,6 +277,95 @@ bool game_list_frame::IsEntryVisible(const game_info& game, bool search_fallback
 	const QString serial = qstr(game->info.serial);
 	const bool is_visible = m_show_hidden || !m_hidden_list.contains(serial);
 	return is_visible && matches_category() && SearchMatchesApp(qstr(game->info.name), serial, search_fallback);
+}
+
+bool game_list_frame::RemoveContentPath(const std::string& path, const std::string& desc)
+{
+	if (!fs::exists(path))
+	{
+		return true;
+	}
+
+	if (fs::is_dir(path))
+	{
+		if (fs::remove_all(path))
+		{
+			game_list_log.notice("Removed '%s' directory: '%s'", desc, path);
+		}
+		else
+		{
+			game_list_log.error("Could not remove '%s' directory: '%s' (%s)", desc, path, fs::g_tls_error);
+
+			return false;
+		}
+	}
+	else // If file
+	{
+		if (fs::remove_file(path))
+		{
+			game_list_log.notice("Removed '%s' file: '%s'", desc, path);
+		}
+		else
+		{
+			game_list_log.error("Could not remove '%s' file: '%s' (%s)", desc, path, fs::g_tls_error);
+
+			return false;
+		}
+	}
+
+	return true;
+}
+
+u32 game_list_frame::RemoveContentPathList(const std::vector<std::string>& path_list, const std::string& desc)
+{
+	u32 paths_removed = 0;
+
+	for (const std::string& path : path_list)
+	{
+		if (RemoveContentPath(path, desc))
+		{
+			paths_removed++;
+		}
+	}
+
+	return paths_removed;
+}
+
+bool game_list_frame::RemoveContentBySerial(const std::string& base_dir, const std::string& serial, const std::string& desc)
+{
+	bool success = true;
+
+	for (const auto& entry : fs::dir(base_dir))
+	{
+		// Search for any path starting with serial (e.g. BCES01118_BCES01118)
+		if (!entry.name.starts_with(serial))
+		{
+			continue;
+		}
+
+		if (!RemoveContentPath(base_dir + entry.name, desc))
+		{
+			success = false; // Mark as failed if there is at least one failure
+		}
+	}
+
+	return success;
+}
+
+std::vector<std::string> game_list_frame::GetDirListBySerial(const std::string& base_dir, const std::string& serial)
+{
+	std::vector<std::string> dir_list;
+
+	for (const auto& entry : fs::dir(base_dir))
+	{
+		// Check for sub folder starting with serial (e.g. BCES01118_BCES01118)
+		if (entry.is_directory && entry.name.starts_with(serial))
+		{
+			dir_list.push_back(base_dir + entry.name);
+		}
+	}
+
+	return dir_list;
 }
 
 std::string game_list_frame::GetCacheDirBySerial(const std::string& serial)
@@ -306,7 +390,7 @@ void game_list_frame::push_path(const std::string& path, std::vector<std::string
 	legit_paths.push_back(path);
 }
 
-void game_list_frame::Refresh(const bool from_drive, const bool scroll_after)
+void game_list_frame::Refresh(const bool from_drive, const std::vector<std::string>& serials_to_remove_from_yml, const bool scroll_after)
 {
 	if (from_drive)
 	{
@@ -336,10 +420,27 @@ void game_list_frame::Refresh(const bool from_drive, const bool scroll_after)
 			m_progress_dialog->SetValue(0);
 		}
 
-		const std::string games_dir = g_cfg_vfs.get(g_cfg_vfs.games_dir, rpcs3::utils::get_emu_dir());
-		const u32 games_added = Emu.AddGamesFromDir(games_dir);
+		const std::string games_dir = rpcs3::utils::get_games_dir();
 
-		if (games_added)
+		// List of serials (title id) to remove in "games.yml" file (if any)
+		std::vector<std::string> serials_to_remove = serials_to_remove_from_yml; // Initialize the list with the specified serials (if any)
+
+		// Scan game list to detect the titles belonging to auto-detection "games" folder
+		for (const auto& [serial, path] : Emu.GetGamesConfig().get_games()) // Loop on game list file
+		{
+			// NOTE: Used starts_with(games_dir) instead of Emu.IsPathInsideDir(path, games_dir) due the latter would check also the existence of the paths
+			//
+			if (path.starts_with(games_dir)) // If game path belongs to auto-detection "games" folder, add the serial to the removal list
+			{
+				serials_to_remove.push_back(serial);
+			}
+		}
+
+		// Remove the specified and detected serials (title id) only from the game list in memory (not yet in "games.yml" file)
+		Emu.RemoveGames(serials_to_remove, false);
+
+		// Scan auto-detection "games" folder adding the detected titles to the game list plus flushing also all the other changes in "games.yml" file
+		if (const u32 games_added = Emu.AddGamesFromDir(games_dir); games_added != 0)
 		{
 			game_list_log.notice("Refresh added %d new entries found in %s", games_added, games_dir);
 		}
@@ -445,7 +546,7 @@ void game_list_frame::Refresh(const bool from_drive, const bool scroll_after)
 		m_game_grid->clear_list();
 		const int scroll_position = m_game_list->verticalScrollBar()->value();
 		m_game_list->populate(matching_apps, m_notes, m_titles, selected_item, m_play_hover_movies);
-		m_game_list->sort(m_game_data.count(), m_sort_column, m_col_sort_order);
+		m_game_list->sort(m_game_data.size(), m_sort_column, m_col_sort_order);
 		RepaintIcons();
 
 		if (scroll_after)
@@ -571,31 +672,29 @@ void game_list_frame::OnParsingFinished()
 		m_games_mutex.lock();
 
 		// Read persistent_settings values
-		const QString note  = m_persistent_settings->GetValue(gui::persistent::notes, serial, "").toString();
-		const QString title = m_persistent_settings->GetValue(gui::persistent::titles, serial, "").toString().simplified();
-		QString last_played = m_persistent_settings->GetValue(gui::persistent::last_played, serial, "").toString();
-		quint64 playtime    = m_persistent_settings->GetValue(gui::persistent::playtime, serial, 0).toULongLong();
+		const QString last_played = m_persistent_settings->GetValue(gui::persistent::last_played, serial, "").toString();
+		const quint64 playtime    = m_persistent_settings->GetValue(gui::persistent::playtime, serial, 0).toULongLong();
 
 		// Set persistent_settings values if values exist
 		if (!last_played.isEmpty())
 		{
-			m_persistent_settings->SetLastPlayed(serial, last_played);
+			m_persistent_settings->SetLastPlayed(serial, last_played, false); // No need to sync here. It would slow down the refresh anyway.
 		}
 		if (playtime > 0)
 		{
-			m_persistent_settings->SetPlaytime(serial, playtime);
+			m_persistent_settings->SetPlaytime(serial, playtime, false); // No need to sync here. It would slow down the refresh anyway.
 		}
 
 		m_serials.insert(serial);
 
-		if (!note.isEmpty())
+		if (QString note = m_persistent_settings->GetValue(gui::persistent::notes, serial, "").toString(); !note.isEmpty())
 		{
-			m_notes.insert(serial, note);
+			m_notes.insert_or_assign(serial, std::move(note));
 		}
 
-		if (!title.isEmpty())
+		if (QString title = m_persistent_settings->GetValue(gui::persistent::titles, serial, "").toString().simplified(); !title.isEmpty())
 		{
-			m_titles.insert(serial, title);
+			m_titles.insert_or_assign(serial, std::move(title));
 		}
 
 		m_games_mutex.unlock();
@@ -687,7 +786,7 @@ void game_list_frame::OnParsingFinished()
 
 							if (static std::unordered_set<std::string> warn_once_list; warn_once_list.emplace(entry.path).second)
 							{
-								game_list_log.todo("Game at '%s' is using deprecated directory '/dev_hdd0/disc/'.\nConsider moving into '%s'.", entry.path, g_cfg_vfs.get(g_cfg_vfs.games_dir, rpcs3::utils::get_emu_dir()));
+								game_list_log.todo("Game at '%s' is using deprecated directory '/dev_hdd0/disc/'.\nConsider moving into '%s'.", entry.path, rpcs3::utils::get_games_dir());
 							}
 
 							return;
@@ -792,8 +891,10 @@ void game_list_frame::OnRefreshFinished()
 	// Sort by name at the very least.
 	std::sort(m_game_data.begin(), m_game_data.end(), [&](const game_info& game1, const game_info& game2)
 	{
-		const QString title1 = m_titles.value(qstr(game1->info.serial), qstr(game1->info.name));
-		const QString title2 = m_titles.value(qstr(game2->info.serial), qstr(game2->info.name));
+		const QString serial1 = QString::fromStdString(game1->info.serial);
+		const QString serial2 = QString::fromStdString(game2->info.serial);
+		const QString& title1 = m_titles.contains(serial1) ? m_titles.at(serial1) : QString::fromStdString(game1->info.name);
+		const QString& title2 = m_titles.contains(serial2) ? m_titles.at(serial2) : QString::fromStdString(game2->info.name);
 		return title1.toLower() < title2.toLower();
 	});
 
@@ -809,6 +910,7 @@ void game_list_frame::OnRefreshFinished()
 	if (!std::exchange(m_initial_refresh_done, true))
 	{
 		m_game_list->restore_layout(m_gui_settings->GetValue(gui::gl_state).toByteArray());
+		m_game_list->sync_header_actions(m_columnActs, [this](int col) { return m_gui_settings->GetGamelistColVisibility(static_cast<gui::game_list_columns>(col)); });
 	}
 
 	// Emit signal and remove slots
@@ -851,12 +953,12 @@ void game_list_frame::SaveSettings()
 	{
 		m_gui_settings->SetGamelistColVisibility(static_cast<gui::game_list_columns>(col), m_columnActs[col]->isChecked());
 	}
-	m_gui_settings->SetValue(gui::gl_sortCol, m_sort_column);
-	m_gui_settings->SetValue(gui::gl_sortAsc, m_col_sort_order == Qt::AscendingOrder);
-	m_gui_settings->SetValue(gui::gl_state, m_game_list->horizontalHeader()->saveState());
+	m_gui_settings->SetValue(gui::gl_sortCol, m_sort_column, false);
+	m_gui_settings->SetValue(gui::gl_sortAsc, m_col_sort_order == Qt::AscendingOrder, false);
+	m_gui_settings->SetValue(gui::gl_state, m_game_list->horizontalHeader()->saveState(), true);
 }
 
-void game_list_frame::doubleClickedSlot(QTableWidgetItem *item)
+void game_list_frame::doubleClickedSlot(QTableWidgetItem* item)
 {
 	if (!item)
 	{
@@ -971,7 +1073,7 @@ void game_list_frame::CreateShortcuts(const game_info& gameinfo, const std::set<
 #endif
 		}
 
-		if (!gameid_token_value.empty() && gui::utils::create_shortcut(gameinfo->info.name, target_cli_args, gameinfo->info.name, gameinfo->info.icon_path, target_icon_dir, location))
+		if (!gameid_token_value.empty() && gui::utils::create_shortcut(gameinfo->info.name, gameinfo->info.serial, target_cli_args, gameinfo->info.name, gameinfo->info.icon_path, target_icon_dir, location))
 		{
 			game_list_log.success("Created %s shortcut for %s", destination, qstr(gameinfo->info.name).simplified());
 		}
@@ -1024,14 +1126,14 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 	const QString name = qstr(current_game.name).simplified();
 
 	const std::string cache_base_dir = GetCacheDirBySerial(current_game.serial);
-	const std::string data_base_dir  = GetDataDirBySerial(current_game.serial);
+	const std::string config_data_base_dir = GetDataDirBySerial(current_game.serial);
 
 	// Make Actions
 	QMenu menu;
 
 	static const auto is_game_running = [](const std::string& serial)
 	{
-		return Emu.GetStatus(false) != system_state::stopped && (serial == Emu.GetTitleID() || (serial == "vsh.self" && Emu.IsVsh()));
+		return !Emu.IsStopped(true) && (serial == Emu.GetTitleID() || (serial == "vsh.self" && Emu.IsVsh()));
 	};
 
 	const bool is_current_running_game = is_game_running(current_game.serial);
@@ -1083,7 +1185,7 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 
 		connect(boot_manual, &QAction::triggered, [this, gameinfo]
 		{
-			if (std::string file_path = QFileDialog::getOpenFileName(this, "Select Config File", "", tr("Config Files (*.yml);;All files (*.*)")).toStdString(); !file_path.empty())
+			if (const std::string file_path = QFileDialog::getOpenFileName(this, "Select Config File", "", tr("Config Files (*.yml);;All files (*.*)")).toStdString(); !file_path.empty())
 			{
 				sys_log.notice("Booting from gamelist per context menu...");
 				Q_EMIT RequestBoot(gameinfo, cfg_mode::custom_selection, file_path);
@@ -1120,32 +1222,14 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 		? tr("&Change Custom Gamepad Configuration")
 		: tr("&Create Custom Gamepad Configuration"));
 	QAction* configure_patches = menu.addAction(tr("&Manage Game Patches"));
+
+	menu.addSeparator();
+
 	QAction* create_cpu_cache = menu.addAction(tr("&Create LLVM Cache"));
 
-	menu.addSeparator();
-
-	QMenu* shortcut_menu = menu.addMenu(tr("&Create Shortcut"));
-	QAction* create_desktop_shortcut = shortcut_menu->addAction(tr("&Create Desktop Shortcut"));
-	connect(create_desktop_shortcut, &QAction::triggered, this, [this, gameinfo](){ CreateShortcuts(gameinfo, { gui::utils::shortcut_location::desktop }); });
-#ifdef _WIN32
-	QAction* create_start_menu_shortcut = shortcut_menu->addAction(tr("&Create Start Menu Shortcut"));
-#elif defined(__APPLE__)
-	QAction* create_start_menu_shortcut = shortcut_menu->addAction(tr("&Create Launchpad Shortcut"));
-#else
-	QAction* create_start_menu_shortcut = shortcut_menu->addAction(tr("&Create Application Menu Shortcut"));
-#endif
-	connect(create_start_menu_shortcut, &QAction::triggered, this, [this, gameinfo](){ CreateShortcuts(gameinfo, { gui::utils::shortcut_location::applications }); });
-
-	menu.addSeparator();
-
-	QAction* rename_title = menu.addAction(tr("&Rename In Game List"));
-	QAction* hide_serial = menu.addAction(tr("&Hide From Game List"));
-	hide_serial->setCheckable(true);
-	hide_serial->setChecked(m_hidden_list.contains(serial));
-	menu.addSeparator();
+	// Remove menu
 	QMenu* remove_menu = menu.addMenu(tr("&Remove"));
-	QAction* remove_game = remove_menu->addAction(tr("&Remove %1").arg(gameinfo->localized_category));
-	remove_game->setEnabled(!is_current_running_game);
+
 	if (gameinfo->hasCustomConfig)
 	{
 		QAction* remove_custom_config = remove_menu->addAction(tr("&Remove Custom Configuration"));
@@ -1174,6 +1258,7 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 	if (has_cache_dir)
 	{
 		remove_menu->addSeparator();
+
 		QAction* remove_shaders_cache = remove_menu->addAction(tr("&Remove Shaders Cache"));
 		remove_shaders_cache->setEnabled(!is_current_running_game);
 		connect(remove_shaders_cache, &QAction::triggered, [this, cache_base_dir]()
@@ -1194,33 +1279,24 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 		});
 	}
 
-	bool has_hdd1_cache = false;
-	const std::string hdd1 = rpcs3::utils::get_hdd1_dir() + "/caches/";
-
-	for (const auto& entry : fs::dir(hdd1))
-	{
-		if (entry.is_directory && entry.name.starts_with(current_game.serial))
-		{
-			has_hdd1_cache = true;
-			break;
-		}
-	}
-
-	if (has_hdd1_cache)
+	const std::string hdd1_cache_base_dir = rpcs3::utils::get_hdd1_dir() + "caches/";
+	const bool has_hdd1_cache_dir = !GetDirListBySerial(hdd1_cache_base_dir, current_game.serial).empty();
+	
+	if (has_hdd1_cache_dir)
 	{
 		QAction* remove_hdd1_cache = remove_menu->addAction(tr("&Remove HDD1 Cache"));
 		remove_hdd1_cache->setEnabled(!is_current_running_game);
-		connect(remove_hdd1_cache, &QAction::triggered, [this, hdd1, serial = current_game.serial]()
+		connect(remove_hdd1_cache, &QAction::triggered, [this, hdd1_cache_base_dir, serial = current_game.serial]()
 		{
-			RemoveHDD1Cache(hdd1, serial, true);
+			RemoveHDD1Cache(hdd1_cache_base_dir, serial, true);
 		});
 	}
 
-	if (has_cache_dir || has_hdd1_cache)
+	if (has_cache_dir || has_hdd1_cache_dir)
 	{
 		QAction* remove_all_caches = remove_menu->addAction(tr("&Remove All Caches"));
 		remove_all_caches->setEnabled(!is_current_running_game);
-		connect(remove_all_caches, &QAction::triggered, [this, current_game, cache_base_dir, hdd1]()
+		connect(remove_all_caches, &QAction::triggered, [this, current_game, cache_base_dir, hdd1_cache_base_dir]()
 		{
 			if (is_game_running(current_game.serial))
 				return;
@@ -1228,59 +1304,76 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 			if (QMessageBox::question(this, tr("Confirm Removal"), tr("Remove all caches?")) != QMessageBox::Yes)
 				return;
 
-			if (fs::remove_all(cache_base_dir))
-				game_list_log.success("Removed cache directory: '%s'", cache_base_dir);
-			else
-				game_list_log.error("Could not remove cache directory: '%s' (%s)", cache_base_dir, fs::g_tls_error);
-
-			RemoveHDD1Cache(hdd1, current_game.serial);
+			RemoveContentPath(cache_base_dir, "cache");
+			RemoveHDD1Cache(hdd1_cache_base_dir, current_game.serial);
 		});
 	}
 
-	menu.addSeparator();
-	QAction* open_game_folder = menu.addAction(tr("&Open Install Folder"));
-	if (gameinfo->hasCustomConfig)
-	{
-		QAction* open_config_dir = menu.addAction(tr("&Open Custom Config Folder"));
-		connect(open_config_dir, &QAction::triggered, [current_game]()
-		{
-			const std::string config_path = rpcs3::utils::get_custom_config_path(current_game.serial);
+	const std::string savestate_dir = fs::get_config_dir() + "savestates/" + current_game.serial;
 
-			if (fs::is_file(config_path))
-				gui::utils::open_dir(config_path);
+	if (fs::is_dir(savestate_dir))
+	{
+		remove_menu->addSeparator();
+
+		QAction* remove_savestate = remove_menu->addAction(tr("&Remove Savestates"));
+		remove_savestate->setEnabled(!is_current_running_game);
+		connect(remove_savestate, &QAction::triggered, [this, current_game, savestate_dir]()
+		{
+			if (is_game_running(current_game.serial))
+				return;
+
+			if (QMessageBox::question(this, tr("Confirm Removal"), tr("Remove savestates?")) != QMessageBox::Yes)
+				return;
+
+			RemoveContentPath(savestate_dir, "savestate");
 		});
 	}
 
-	// This is a debug feature, let's hide it by reusing debug tab protection 
-	if (m_gui_settings->GetValue(gui::m_showDebugTab).toBool())
-	{
-		QAction* open_cache_folder = menu.addAction(tr("&Open Cache Folder"));
-		open_cache_folder->setEnabled(fs::is_dir(cache_base_dir));
+	// Disable the Remove menu if empty
+	remove_menu->setEnabled(!remove_menu->isEmpty());
 
-		if (open_cache_folder->isEnabled())
-		{
-			connect(open_cache_folder, &QAction::triggered, this, [cache_base_dir]()
-			{
-				gui::utils::open_dir(cache_base_dir);
-			});
-		}
-	}
-
-	if (fs::is_dir(data_base_dir))
-	{
-		QAction* open_data_dir = menu.addAction(tr("&Open Data Folder"));
-		connect(open_data_dir, &QAction::triggered, [data_base_dir]()
-		{
-			gui::utils::open_dir(data_base_dir);
-		});
-	}
 	menu.addSeparator();
-	QAction* check_compat = menu.addAction(tr("&Check Game Compatibility"));
-	QAction* download_compat = menu.addAction(tr("&Download Compatibility Database"));
-	menu.addSeparator();
-	QAction* edit_notes = menu.addAction(tr("&Edit Tooltip Notes"));
-	QAction* reset_time_played = menu.addAction(tr("&Reset Time Played"));
 
+	// Manage Game menu
+	QMenu* manage_game_menu = menu.addMenu(tr("&Manage Game"));
+
+	// Create game shortcuts
+	QAction* create_desktop_shortcut = manage_game_menu->addAction(tr("&Create Desktop Shortcut"));
+	connect(create_desktop_shortcut, &QAction::triggered, this, [this, gameinfo]()
+	{
+		CreateShortcuts(gameinfo, {gui::utils::shortcut_location::desktop});
+	});
+#ifdef _WIN32
+	QAction* create_start_menu_shortcut = manage_game_menu->addAction(tr("&Create Start Menu Shortcut"));
+#elif defined(__APPLE__)
+	QAction* create_start_menu_shortcut = manage_game_menu->addAction(tr("&Create Launchpad Shortcut"));
+#else
+	QAction* create_start_menu_shortcut = manage_game_menu->addAction(tr("&Create Application Menu Shortcut"));
+#endif
+	connect(create_start_menu_shortcut, &QAction::triggered, this, [this, gameinfo]()
+	{
+		CreateShortcuts(gameinfo, {gui::utils::shortcut_location::applications});
+	});
+
+	manage_game_menu->addSeparator();
+
+	// Hide/rename game in game list
+	QAction* hide_serial = manage_game_menu->addAction(tr("&Hide From Game List"));
+	hide_serial->setCheckable(true);
+	hide_serial->setChecked(m_hidden_list.contains(serial));
+	QAction* rename_title = manage_game_menu->addAction(tr("&Rename In Game List"));
+
+	// Edit tooltip notes/reset time played
+	QAction* edit_notes = manage_game_menu->addAction(tr("&Edit Tooltip Notes"));
+	QAction* reset_time_played = manage_game_menu->addAction(tr("&Reset Time Played"));
+
+	manage_game_menu->addSeparator();
+
+	// Remove game
+	QAction* remove_game = manage_game_menu->addAction(tr("&Remove %1").arg(gameinfo->localized_category));
+	remove_game->setEnabled(!is_current_running_game);
+
+	// Custom Images menu
 	QMenu* icon_menu = menu.addMenu(tr("&Custom Images"));
 	const std::array<QAction*, 3> custom_icon_actions =
 	{
@@ -1427,10 +1520,118 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 		icon_menu->setEnabled(false);
 	}
 
+	menu.addSeparator();
+
+	// Open Folder menu
+	QMenu* open_folder_menu = menu.addMenu(tr("&Open Folder"));
+
+	const bool is_disc_game = qstr(current_game.category) == cat::cat_disc_game;
+	const std::string captures_dir = fs::get_config_dir() + "/captures/";
+	const std::string recordings_dir = fs::get_config_dir() + "/recordings/" + current_game.serial;
+	const std::string screenshots_dir = fs::get_config_dir() + "/screenshots/" + current_game.serial;
+	std::vector<std::string> data_dir_list;
+
+	if (is_disc_game)
+	{
+		QAction* open_disc_game_folder = open_folder_menu->addAction(tr("&Open Disc Game Folder"));
+		connect(open_disc_game_folder, &QAction::triggered, [current_game]()
+		{
+			gui::utils::open_dir(current_game.path);
+		});
+
+		data_dir_list = GetDirListBySerial(rpcs3::utils::get_hdd0_dir() + "game/", current_game.serial); // It could be absent for a disc game
+	}
+	else
+	{
+		data_dir_list.push_back(current_game.path);
+	}
+
+	if (!data_dir_list.empty()) // "true" if data path is present (it could be absent for a disc game)
+	{
+		QAction* open_data_folder = open_folder_menu->addAction(tr("&Open %0 Folder").arg(is_disc_game ? tr("Game Data") : gameinfo->localized_category));
+		connect(open_data_folder, &QAction::triggered, [data_dir_list]()
+		{
+			for (const std::string& data_dir : data_dir_list)
+			{
+				gui::utils::open_dir(data_dir);
+			}
+		});
+	}
+
+	if (gameinfo->hasCustomConfig)
+	{
+		QAction* open_config_dir = open_folder_menu->addAction(tr("&Open Custom Config Folder"));
+		connect(open_config_dir, &QAction::triggered, [current_game]()
+		{
+			const std::string config_path = rpcs3::utils::get_custom_config_path(current_game.serial);
+
+			if (fs::is_file(config_path))
+				gui::utils::open_dir(config_path);
+		});
+	}
+
+	// This is a debug feature, let's hide it by reusing debug tab protection
+	if (m_gui_settings->GetValue(gui::m_showDebugTab).toBool() && has_cache_dir)
+	{
+		QAction* open_cache_folder = open_folder_menu->addAction(tr("&Open Cache Folder"));
+		connect(open_cache_folder, &QAction::triggered, [cache_base_dir]()
+		{
+			gui::utils::open_dir(cache_base_dir);
+		});
+	}
+
+	if (fs::is_dir(config_data_base_dir))
+	{
+		QAction* open_config_data_dir = open_folder_menu->addAction(tr("&Open Config Data Folder"));
+		connect(open_config_data_dir, &QAction::triggered, [config_data_base_dir]()
+		{
+			gui::utils::open_dir(config_data_base_dir);
+		});
+	}
+
+	if (fs::is_dir(savestate_dir))
+	{
+		QAction* open_savestate_dir = open_folder_menu->addAction(tr("&Open Savestate Folder"));
+		connect(open_savestate_dir, &QAction::triggered, [savestate_dir]()
+		{
+			gui::utils::open_dir(savestate_dir);
+		});
+	}
+
+	QAction* open_captures_dir = open_folder_menu->addAction(tr("&Open Captures Folder"));
+	connect(open_captures_dir, &QAction::triggered, [captures_dir]()
+	{
+		gui::utils::open_dir(captures_dir);
+	});
+
+	if (fs::is_dir(recordings_dir))
+	{
+		QAction* open_recordings_dir = open_folder_menu->addAction(tr("&Open Recordings Folder"));
+		connect(open_recordings_dir, &QAction::triggered, [recordings_dir]()
+		{
+			gui::utils::open_dir(recordings_dir);
+		});
+	}
+
+	if (fs::is_dir(screenshots_dir))
+	{
+		QAction* open_screenshots_dir = open_folder_menu->addAction(tr("&Open Screenshots Folder"));
+		connect(open_screenshots_dir, &QAction::triggered, [screenshots_dir]()
+		{
+			gui::utils::open_dir(screenshots_dir);
+		});
+	}
+
+	// Copy Info menu
 	QMenu* info_menu = menu.addMenu(tr("&Copy Info"));
 	QAction* copy_info = info_menu->addAction(tr("&Copy Name + Serial"));
 	QAction* copy_name = info_menu->addAction(tr("&Copy Name"));
 	QAction* copy_serial = info_menu->addAction(tr("&Copy Serial"));
+
+	menu.addSeparator();
+
+	QAction* check_compat = menu.addAction(tr("&Check Game Compatibility"));
+	QAction* download_compat = menu.addAction(tr("&Download Compatibility Database"));
 
 	connect(boot, &QAction::triggered, this, [this, gameinfo]()
 	{
@@ -1492,63 +1693,187 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 			CreateCPUCaches(gameinfo);
 		}
 	});
-	connect(remove_game, &QAction::triggered, this, [this, current_game, gameinfo, cache_base_dir, name]
+	connect(remove_game, &QAction::triggered, this, [this, current_game, gameinfo, cache_base_dir, hdd1_cache_base_dir, name]
 	{
-		if (current_game.path.empty())
-		{
-			game_list_log.fatal("Cannot remove game. Path is empty");
-			return;
-		}
-
 		if (is_game_running(current_game.serial))
 		{
 			QMessageBox::critical(this, tr("Cannot Remove Game"), tr("The PS3 application is still running, it cannot be removed!"));
 			return;
 		}
 
-		QString size_information;
+		const bool is_disc_game = qstr(current_game.category) == cat::cat_disc_game;
+		const bool is_in_games_dir = is_disc_game && Emu.IsPathInsideDir(current_game.path, rpcs3::utils::get_games_dir());
+		std::vector<std::string> data_dir_list;
 
-		if (current_game.size_on_disk != umax)
+		if (is_disc_game)
 		{
-			fs::device_stat stat{};
-			if (fs::statfs(current_game.path, stat))
+			data_dir_list = GetDirListBySerial(rpcs3::utils::get_hdd0_dir() + "game/", current_game.serial);
+		}
+		else
+		{
+			data_dir_list.push_back(current_game.path);
+		}
+
+		const bool has_data_dir = !data_dir_list.empty(); // "true" if data path is present (it could be absent for a disc game)
+		QString text = tr("%0 - %1\n").arg(qstr(current_game.serial)).arg(name);
+
+		if (is_disc_game)
+		{
+			text += tr("\nDisc Game Info:\nPath: %0\n").arg(qstr(current_game.path));
+
+			if (current_game.size_on_disk != umax) // If size was properly detected
 			{
-				size_information = tr("Game Directory Size: %0\nCurrent Free Disk Space: %1\n\n").arg(gui::utils::format_byte_size(current_game.size_on_disk)).arg(gui::utils::format_byte_size(stat.avail_free));
+				text += tr("Size: %0\n").arg(gui::utils::format_byte_size(current_game.size_on_disk));
 			}
 		}
 
-		QMessageBox mb(QMessageBox::Question, tr("Confirm %1 Removal").arg(gameinfo->localized_category), tr("Permanently remove %0 from drive?\n%1Path: %2").arg(name).arg(size_information).arg(qstr(current_game.path)), QMessageBox::Yes | QMessageBox::No, this);
-		mb.setCheckBox(new QCheckBox(tr("Remove caches and custom configs")));
-
-		if (mb.exec() == QMessageBox::Yes)
+		if (has_data_dir)
 		{
-			const bool remove_caches = mb.checkBox()->isChecked();
-			if (fs::remove_all(current_game.path))
-			{
-				if (remove_caches)
-				{
-					if (fs::is_dir(cache_base_dir))
-					{
-						if (fs::remove_all(cache_base_dir))
-							game_list_log.notice("Removed cache directory: '%s'", cache_base_dir);
-						else
-							game_list_log.error("Could not remove cache directory: '%s' (%s)", cache_base_dir, fs::g_tls_error);
-					}
+			u64 total_data_size = 0;
 
-					RemoveCustomConfiguration(current_game.serial);
-					RemoveCustomPadConfiguration(current_game.serial);
+			text += tr("\n%0 Info:\n").arg(is_disc_game ? tr("Game Data") : gameinfo->localized_category);
+
+			for (const std::string& data_dir : data_dir_list)
+			{
+				text += tr("Path: %0\n").arg(qstr(data_dir));
+
+				if (const u64 data_size = fs::get_dir_size(data_dir, 1); data_size != umax) // If size was properly detected
+				{
+					total_data_size += data_size;
+					text += tr("Size: %0\n").arg(gui::utils::format_byte_size(data_size));
 				}
-				m_game_data.erase(std::remove(m_game_data.begin(), m_game_data.end(), gameinfo), m_game_data.end());
-				game_list_log.success("Removed %s %s in %s", gameinfo->localized_category, current_game.name, current_game.path);
-				Refresh(true);
+			}
+
+			if (data_dir_list.size() > 1)
+			{
+				text += tr("Total size: %0\n").arg(gui::utils::format_byte_size(total_data_size));
+			}
+		}
+
+		if (fs::device_stat stat{}; fs::statfs(rpcs3::utils::get_hdd0_dir(), stat)) // Retrieve disk space info on data path's drive
+		{
+			text += tr("\nCurrent free disk space: %0\n").arg(gui::utils::format_byte_size(stat.avail_free));
+		}
+		
+		if (has_data_dir)
+		{
+			text += tr("\nPermanently remove %0 and selected (optional) contents from drive?\n").arg(is_disc_game ? tr("Game Data") : gameinfo->localized_category);
+		}
+		else
+		{
+			text += tr("\nPermanently remove selected (optional) contents from drive?\n");
+		}
+
+		QMessageBox mb(QMessageBox::Question, tr("Confirm %0 Removal").arg(gameinfo->localized_category), text, QMessageBox::Yes | QMessageBox::No, this);
+		QCheckBox* disc = new QCheckBox(tr("Remove title from game list (Disc Game path is not removed!)"));
+		QCheckBox* caches = new QCheckBox(tr("Remove caches and custom configs"));
+		QCheckBox* icons = new QCheckBox(tr("Remove icons and shortcuts"));
+		QCheckBox* savestate = new QCheckBox(tr("Remove savestates"));
+		QCheckBox* captures = new QCheckBox(tr("Remove captures"));
+		QCheckBox* recordings = new QCheckBox(tr("Remove recordings"));
+		QCheckBox* screenshots = new QCheckBox(tr("Remove screenshots"));
+
+		if (is_disc_game)
+		{
+			if (is_in_games_dir)
+			{
+				disc->setToolTip(tr("Title located under auto-detection \"games\" folder cannot be removed"));
+				disc->setDisabled(true);
 			}
 			else
 			{
-				game_list_log.error("Failed to remove %s %s in %s (%s)", gameinfo->localized_category, current_game.name, current_game.path, fs::g_tls_error);
-				QMessageBox::critical(this, tr("Failure!"), remove_caches
-					? tr("Failed to remove %0 from drive!\nPath: %1\nCaches and custom configs have been left intact.").arg(name).arg(qstr(current_game.path))
-					: tr("Failed to remove %0 from drive!\nPath: %1").arg(name).arg(qstr(current_game.path)));
+				disc->setChecked(true);
 			}
+		}
+		else
+		{
+			disc->setVisible(false);
+		}
+
+		caches->setChecked(true);
+		icons->setChecked(true);
+		mb.setCheckBox(disc);
+
+		QGridLayout* grid = qobject_cast<QGridLayout*>(mb.layout());
+		int row, column, rowSpan, columnSpan;
+
+		grid->getItemPosition(grid->indexOf(disc), &row, &column, &rowSpan, &columnSpan);
+		grid->addWidget(caches, row + 3, column, rowSpan, columnSpan);
+		grid->addWidget(icons, row + 4, column, rowSpan, columnSpan);
+		grid->addWidget(savestate, row + 5, column, rowSpan, columnSpan);
+		grid->addWidget(captures, row + 6, column, rowSpan, columnSpan);
+		grid->addWidget(recordings, row + 7, column, rowSpan, columnSpan);
+		grid->addWidget(screenshots, row + 8, column, rowSpan, columnSpan);
+
+		if (mb.exec() == QMessageBox::Yes)
+		{
+			const bool remove_caches = caches->isChecked();
+
+			// Remove data path in "dev_hdd0/game" folder (if any)
+			if (has_data_dir && RemoveContentPathList(data_dir_list, gameinfo->localized_category.toStdString()) != data_dir_list.size())
+			{
+				QMessageBox::critical(this, tr("Failure!"), remove_caches
+					? tr("Failed to remove %0 from drive!\nPath: %1\nCaches and custom configs have been left intact.").arg(name).arg(qstr(data_dir_list[0]))
+					: tr("Failed to remove %0 from drive!\nPath: %1").arg(name).arg(qstr(data_dir_list[0])));
+
+				return;
+			}
+
+			// Remove lock file in "dev_hdd0/game/＄locks" folder (if any)
+			RemoveContentBySerial(rpcs3::utils::get_hdd0_dir() + "game/＄locks/", current_game.serial, "lock");
+
+			// Remove caches in "cache" and "dev_hdd1/caches" folders (if any) and custom configs in "config/custom_config" folder (if any)
+			if (remove_caches)
+			{
+				RemoveContentPath(cache_base_dir, "cache");
+				RemoveHDD1Cache(hdd1_cache_base_dir, current_game.serial);
+
+				RemoveCustomConfiguration(current_game.serial);
+				RemoveCustomPadConfiguration(current_game.serial);
+			}
+
+			// Remove icons in "Icons/game_icons" folder, shortcuts in "games/shortcuts" folder and from desktop/start menu
+			if (icons->isChecked())
+			{
+				RemoveContentBySerial(fs::get_config_dir() + "Icons/game_icons/", current_game.serial, "icons");
+				RemoveContentBySerial(fs::get_config_dir() + "games/shortcuts/", name.toStdString() + ".lnk", "link");
+				// TODO: Remove shortcuts from desktop/start menu
+			}
+
+			if (savestate->isChecked())
+			{
+				RemoveContentBySerial(fs::get_config_dir() + "savestates/", current_game.serial, "savestate");
+			}
+
+			if (captures->isChecked())
+			{
+				RemoveContentBySerial(fs::get_config_dir() + "captures/", current_game.serial, "captures");
+			}
+
+			if (recordings->isChecked())
+			{
+				RemoveContentBySerial(fs::get_config_dir() + "recordings/", current_game.serial, "recordings");
+			}
+
+			if (screenshots->isChecked())
+			{
+				RemoveContentBySerial(fs::get_config_dir() + "screenshots/", current_game.serial, "screenshots");
+			}
+
+			m_game_data.erase(std::remove(m_game_data.begin(), m_game_data.end(), gameinfo), m_game_data.end());
+			game_list_log.success("Removed %s - %s", gameinfo->localized_category, current_game.name);
+
+			std::vector<std::string> serials_to_remove_from_yml{};
+
+			// Prepare list of serials (title id) to remove in "games.yml" file (if any)
+			if (is_disc_game && disc->isChecked())
+			{
+				serials_to_remove_from_yml.push_back(current_game.serial);
+			}
+
+			// Finally, refresh the game list.
+			// Hidden list in "GuiConfigs/CurrentSettings.ini" file is also properly updated (title removed) if needed
+			Refresh(true, serials_to_remove_from_yml);
 		}
 	});
 	connect(configure_patches, &QAction::triggered, this, [this, gameinfo]()
@@ -1563,10 +1888,6 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 		}
 		patch_manager_dialog patch_manager(m_gui_settings, games, gameinfo->info.serial, game_list::GetGameVersion(gameinfo), this);
 		patch_manager.exec();
-	});
-	connect(open_game_folder, &QAction::triggered, this, [current_game]()
-	{
-		gui::utils::open_dir(current_game.path);
 	});
 	connect(check_compat, &QAction::triggered, this, [serial]
 	{
@@ -1591,12 +1912,12 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 
 			if (new_title.isEmpty() || new_title == name)
 			{
-				m_titles.remove(serial);
+				m_titles.erase(serial);
 				m_persistent_settings->RemoveValue(gui::persistent::titles, serial);
 			}
 			else
 			{
-				m_titles.insert(serial, new_title);
+				m_titles.insert_or_assign(serial, new_title);
 				m_persistent_settings->SetValue(gui::persistent::titles, serial, new_title);
 			}
 			Refresh(true); // full refresh in order to reliably sort the list
@@ -1612,12 +1933,12 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 		{
 			if (new_notes.simplified().isEmpty())
 			{
-				m_notes.remove(serial);
+				m_notes.erase(serial);
 				m_persistent_settings->RemoveValue(gui::persistent::notes, serial);
 			}
 			else
 			{
-				m_notes.insert(serial, new_notes);
+				m_notes.insert_or_assign(serial, new_notes);
 				m_persistent_settings->SetValue(gui::persistent::notes, serial, new_notes);
 			}
 			Refresh();
@@ -1627,9 +1948,8 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 	{
 		if (QMessageBox::question(this, tr("Confirm Reset"), tr("Reset time played?\n\n%0 [%1]").arg(name).arg(serial)) == QMessageBox::Yes)
 		{
-			m_persistent_settings->SetPlaytime(serial, 0);
-			m_persistent_settings->SetLastPlayed(serial, 0);
-			m_persistent_settings->sync();
+			m_persistent_settings->SetPlaytime(serial, 0, false);
+			m_persistent_settings->SetLastPlayed(serial, 0, true);
 			Refresh();
 		}
 	});
@@ -1649,11 +1969,11 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 	// Disable options depending on software category
 	const QString category = qstr(current_game.category);
 
-	if (category == cat::cat_disc_game || category == cat::cat_ps3_os)
+	if (category == cat::cat_ps3_os)
 	{
 		remove_game->setEnabled(false);
 	}
-	else if (category != cat::cat_hdd_game)
+	else if (category != cat::cat_disc_game && category != cat::cat_hdd_game)
 	{
 		check_compat->setEnabled(false);
 	}
@@ -1728,7 +2048,7 @@ bool game_list_frame::RemoveCustomPadConfiguration(const std::string& title_id, 
 	if (!fs::is_dir(config_dir))
 		return true;
 
-	if (is_interactive && QMessageBox::question(this, tr("Confirm Removal"), (!Emu.IsStopped() && Emu.GetTitleID() == title_id)
+	if (is_interactive && QMessageBox::question(this, tr("Confirm Removal"), (!Emu.IsStopped(true) && Emu.GetTitleID() == title_id)
 		? tr("Remove custom pad configuration?\nYour configuration will revert to the global pad settings.")
 		: tr("Remove custom pad configuration?")) != QMessageBox::Yes)
 		return true;
@@ -1744,7 +2064,7 @@ bool game_list_frame::RemoveCustomPadConfiguration(const std::string& title_id, 
 		{
 			game->hasCustomPadConfig = false;
 		}
-		if (!Emu.IsStopped() && Emu.GetTitleID() == title_id)
+		if (!Emu.IsStopped(true) && Emu.GetTitleID() == title_id)
 		{
 			pad::set_enabled(false);
 			pad::reset(title_id);
@@ -1957,11 +2277,128 @@ void game_list_frame::RemoveHDD1Cache(const std::string& base_dir, const std::st
 		game_list_log.fatal("Only %d/%d HDD1 cache directories could be removed in %s (%s)", dirs_removed, dirs_total, base_dir, title_id);
 }
 
-void game_list_frame::BatchCreateCPUCaches(const QList<game_info>& game_data)
+void game_list_frame::BatchActionBySerials(progress_dialog* pdlg, const std::set<std::string>& serials, QString progressLabel, std::function<bool(const std::string&)> action, std::function<void(u32, u32)> cancel_log, bool refresh_on_finish, bool can_be_concurrent, std::function<bool()> should_wait_cb)
 {
-	const std::string vsh_path = g_cfg_vfs.get_dev_flash() + "vsh/module/";
-	const bool vsh_exists = game_data.isEmpty() && fs::is_file(vsh_path + "vsh.self");
-	const u32 total = !game_data.isEmpty() ? game_data.size() : (m_game_data.size() + (vsh_exists ? 1 : 0));
+	// Concurrent tasks should not wait (at least not in current implementation)
+	ensure(!should_wait_cb || !can_be_concurrent);
+
+	g_system_progress_canceled = false;
+
+	const std::shared_ptr<std::function<bool(int)>> iterate_over_serial = std::make_shared<std::function<bool(int)>>();
+
+	const std::shared_ptr<atomic_t<int>> index = std::make_shared<atomic_t<int>>(0);
+
+	const int serials_size = ::narrow<int>(serials.size());
+
+	*iterate_over_serial = [=, this, index_ptr = index](int index)
+	{
+		if (index == serials_size)
+		{
+			return false;
+		}
+
+		const std::string& serial = *std::next(serials.begin(), index);
+
+		if (pdlg->wasCanceled() || g_system_progress_canceled.exchange(false))
+		{
+			if (cancel_log)
+			{
+				cancel_log(index, serials_size);
+			}
+			return false;
+		}
+
+		if (action(serial))
+		{
+			const int done = index_ptr->load();
+			pdlg->setLabelText(progressLabel.arg(done + 1).arg(serials_size));
+			pdlg->SetValue(done + 1);
+		}
+
+		(*index_ptr)++;
+		return true;
+	};
+
+	if (can_be_concurrent)
+	{
+		// Unused currently
+
+		QList<int> indices;
+
+		for (int i = 0; i < serials_size; i++)
+		{
+			indices.append(i);
+		}
+
+		QFutureWatcher<void>* future_watcher = new QFutureWatcher<void>(this);
+
+		future_watcher->setFuture(QtConcurrent::map(std::move(indices), *iterate_over_serial));
+
+		connect(future_watcher, &QFutureWatcher<void>::finished, this, [=, this]()
+		{
+			pdlg->setLabelText(progressLabel.arg(*index).arg(serials_size));
+			pdlg->setCancelButtonText(tr("OK"));
+			QApplication::beep();
+
+			if (refresh_on_finish && index)
+			{
+				Refresh(true);
+			}
+
+			future_watcher->deleteLater();
+		});
+
+		return;
+	}
+
+	const std::shared_ptr<std::function<void()>> periodic_func = std::make_shared<std::function<void()>>();
+
+	*periodic_func = [=, this]()
+	{
+		if (should_wait_cb && should_wait_cb())
+		{
+			// Conditions are not met for execution
+			// Check again later
+			QTimer::singleShot(5, this, *periodic_func);
+			return;
+		}
+
+		if ((*iterate_over_serial)(*index))
+		{
+			QTimer::singleShot(1, this, *periodic_func);
+			return;
+		}
+
+		pdlg->setLabelText(progressLabel.arg(*index).arg(serials_size));
+		pdlg->setCancelButtonText(tr("OK"));
+		connect(pdlg, &progress_dialog::canceled, this, [pdlg](){ pdlg->deleteLater(); });
+		QApplication::beep();
+
+		if (refresh_on_finish && index)
+		{
+			Refresh(true);
+		}
+	};
+
+	// Invoked on the next event loop processing iteration
+	QTimer::singleShot(1, this, *periodic_func);
+}
+
+void game_list_frame::BatchCreateCPUCaches(const std::vector<game_info>& game_data)
+{
+	std::set<std::string> serials;
+
+	if (game_data.empty())
+	{
+		serials.emplace("vsh.self");
+	}
+
+	for (const auto& game : (game_data.empty() ? m_game_data : game_data))
+	{
+		serials.emplace(game->info.serial);
+	}
+
+	const usz total = serials.size();
 
 	if (total == 0)
 	{
@@ -1976,68 +2413,42 @@ void game_list_frame::BatchCreateCPUCaches(const QList<game_info>& game_data)
 
 	const QString main_label = tr("Creating all LLVM caches");
 
-	progress_dialog* pdlg = new progress_dialog(tr("LLVM Cache Batch Creation"), main_label, tr("Cancel"), 0, total, false, this);
-	pdlg->setWindowFlags(Qt::Window | Qt::WindowMinimizeButtonHint);
+	progress_dialog* pdlg = new progress_dialog(tr("LLVM Cache Batch Creation"), main_label, tr("Cancel"), 0, ::narrow<s32>(total), false, this);
 	pdlg->setAutoClose(false);
 	pdlg->setAutoReset(false);
-	pdlg->show();
-	QApplication::processEvents();
+	pdlg->open();
 
-	u32 created = 0;
-
-	const auto wait_until_compiled = [pdlg]() -> bool
+	connect(pdlg, &progress_dialog::canceled, this, []()
 	{
-		while (!Emu.IsStopped())
+		if (!Emu.IsStopped())
 		{
-			if (pdlg->wasCanceled())
+			Emu.GracefulShutdown(false, true);
+		}
+	});
+
+	BatchActionBySerials(pdlg, serials, tr("%0\nProgress: %1/%2 caches compiled").arg(main_label),
+	[&, game_data](const std::string& serial)
+	{
+		if (Emu.IsStopped(true))
+		{
+			const auto it = std::find_if(m_game_data.begin(), m_game_data.end(), FN(x->info.serial == serial));
+
+			if (it != m_game_data.end())
 			{
-				return false;
+				return CreateCPUCaches((*it)->info.path, serial);
 			}
-			QApplication::processEvents();
 		}
-		return true;
-	};
 
-	if (vsh_exists)
+		return false;
+	},
+	[this](u32, u32)
 	{
-		pdlg->setLabelText(tr("%0\nProgress: %1/%2. Compiling caches for VSH...", "Second line after main label").arg(main_label).arg(created).arg(total));
-		QApplication::processEvents();
-
-		if (CreateCPUCaches(vsh_path) && wait_until_compiled())
-		{
-			pdlg->SetValue(++created);
-		}
-	}
-
-	for (const auto& game : (game_data.isEmpty() ? m_game_data : game_data))
-	{
-		if (pdlg->wasCanceled() || g_system_progress_canceled)
-		{
-			break;
-		}
-
-		pdlg->setLabelText(tr("%0\nProgress: %1/%2. Compiling caches for %3...", "Second line after main label").arg(main_label).arg(created).arg(total).arg(qstr(game->info.serial)));
-		QApplication::processEvents();
-
-		if (CreateCPUCaches(game) && wait_until_compiled())
-		{
-			pdlg->SetValue(++created);
-		}
-	}
-
-	if (pdlg->wasCanceled() || g_system_progress_canceled)
-	{
-		pdlg->deleteLater(); // We did not allow deletion earlier to prevent segfaults when canceling.
 		game_list_log.notice("LLVM Cache Batch Creation was canceled");
-		Emu.GracefulShutdown(false);
-	}
-	else
+	}, false, false,
+	[]()
 	{
-		pdlg->SetDeleteOnClose();
-		pdlg->setLabelText(tr("Created LLVM Caches for %n title(s)", "", created));
-		pdlg->setCancelButtonText(tr("OK"));
-		QApplication::beep();
-	}
+		return !Emu.IsStopped(true);
+	});
 }
 
 void game_list_frame::BatchRemovePPUCaches()
@@ -2048,7 +2459,7 @@ void game_list_frame::BatchRemovePPUCaches()
 	}
 
 	std::set<std::string> serials;
-	serials.emplace("vsh");
+	serials.emplace("vsh.self");
 
 	for (const auto& game : m_game_data)
 	{
@@ -2066,35 +2477,17 @@ void game_list_frame::BatchRemovePPUCaches()
 	progress_dialog* pdlg = new progress_dialog(tr("PPU Cache Batch Removal"), tr("Removing all PPU caches"), tr("Cancel"), 0, total, false, this);
 	pdlg->setAutoClose(false);
 	pdlg->setAutoReset(false);
-	pdlg->show();
+	pdlg->open();
 
-	u32 removed = 0;
-	for (const auto& serial : serials)
+	BatchActionBySerials(pdlg, serials, tr("%0/%1 caches cleared"),
+	[this](const std::string& serial)
 	{
-		if (pdlg->wasCanceled())
-		{
-			break;
-		}
-		QApplication::processEvents();
-
-		if (RemovePPUCache(GetCacheDirBySerial(serial)))
-		{
-			pdlg->SetValue(++removed);
-		}
-	}
-
-	if (pdlg->wasCanceled())
+		return Emu.IsStopped(true) && RemovePPUCache(GetCacheDirBySerial(serial));
+	},
+	[this](u32, u32)
 	{
-		pdlg->deleteLater(); // We did not allow deletion earlier to prevent segfaults when canceling.
 		game_list_log.notice("PPU Cache Batch Removal was canceled");
-	}
-	else
-	{
-		pdlg->SetDeleteOnClose();
-		pdlg->setLabelText(tr("%0/%1 caches cleared").arg(removed).arg(total));
-		pdlg->setCancelButtonText(tr("OK"));
-		QApplication::beep();
-	}
+	}, false);
 }
 
 void game_list_frame::BatchRemoveSPUCaches()
@@ -2105,7 +2498,7 @@ void game_list_frame::BatchRemoveSPUCaches()
 	}
 
 	std::set<std::string> serials;
-	serials.emplace("vsh");
+	serials.emplace("vsh.self");
 
 	for (const auto& game : m_game_data)
 	{
@@ -2123,35 +2516,17 @@ void game_list_frame::BatchRemoveSPUCaches()
 	progress_dialog* pdlg = new progress_dialog(tr("SPU Cache Batch Removal"), tr("Removing all SPU caches"), tr("Cancel"), 0, total, false, this);
 	pdlg->setAutoClose(false);
 	pdlg->setAutoReset(false);
-	pdlg->show();
+	pdlg->open();
 
-	u32 removed = 0;
-	for (const auto& serial : serials)
+	BatchActionBySerials(pdlg, serials, tr("%0/%1 caches cleared"),
+	[this](const std::string& serial)
 	{
-		if (pdlg->wasCanceled())
-		{
-			break;
-		}
-		QApplication::processEvents();
-
-		if (RemoveSPUCache(GetCacheDirBySerial(serial)))
-		{
-			pdlg->SetValue(++removed);
-		}
-	}
-
-	if (pdlg->wasCanceled())
+		return Emu.IsStopped(true) && RemoveSPUCache(GetCacheDirBySerial(serial));
+	},
+	[this](u32 removed, u32 total)
 	{
-		pdlg->deleteLater(); // We did not allow deletion earlier to prevent segfaults when canceling.
 		game_list_log.notice("SPU Cache Batch Removal was canceled. %d/%d folders cleared", removed, total);
-	}
-	else
-	{
-		pdlg->SetDeleteOnClose();
-		pdlg->setLabelText(tr("%0/%1 caches cleared").arg(removed).arg(total));
-		pdlg->setCancelButtonText(tr("OK"));
-		QApplication::beep();
-	}
+	}, false);
 }
 
 void game_list_frame::BatchRemoveCustomConfigurations()
@@ -2164,6 +2539,7 @@ void game_list_frame::BatchRemoveCustomConfigurations()
 			serials.emplace(game->info.serial);
 		}
 	}
+
 	const u32 total = ::size32(serials);
 
 	if (total == 0)
@@ -2175,37 +2551,17 @@ void game_list_frame::BatchRemoveCustomConfigurations()
 	progress_dialog* pdlg = new progress_dialog(tr("Custom Configuration Batch Removal"), tr("Removing all custom configurations"), tr("Cancel"), 0, total, false, this);
 	pdlg->setAutoClose(false);
 	pdlg->setAutoReset(false);
-	pdlg->show();
+	pdlg->open();
 
-	u32 removed = 0;
-	for (const auto& serial : serials)
+	BatchActionBySerials(pdlg, serials, tr("%0/%1 custom configurations cleared"),
+	[this](const std::string& serial)
 	{
-		if (pdlg->wasCanceled())
-		{
-			break;
-		}
-		QApplication::processEvents();
-
-		if (RemoveCustomConfiguration(serial))
-		{
-			pdlg->SetValue(++removed);
-		}
-	}
-
-	if (pdlg->wasCanceled())
+		return Emu.IsStopped(true) && RemoveCustomConfiguration(serial);
+	},
+	[this](u32 removed, u32 total)
 	{
-		pdlg->deleteLater(); // We did not allow deletion earlier to prevent segfaults when canceling.
 		game_list_log.notice("Custom Configuration Batch Removal was canceled. %d/%d custom configurations cleared", removed, total);
-	}
-	else
-	{
-		pdlg->SetDeleteOnClose();
-		pdlg->setLabelText(tr("%0/%1 custom configurations cleared").arg(removed).arg(total));
-		pdlg->setCancelButtonText(tr("OK"));
-		QApplication::beep();
-	}
-
-	Refresh(true);
+	}, true);
 }
 
 void game_list_frame::BatchRemoveCustomPadConfigurations()
@@ -2229,37 +2585,17 @@ void game_list_frame::BatchRemoveCustomPadConfigurations()
 	progress_dialog* pdlg = new progress_dialog(tr("Custom Pad Configuration Batch Removal"), tr("Removing all custom pad configurations"), tr("Cancel"), 0, total, false, this);
 	pdlg->setAutoClose(false);
 	pdlg->setAutoReset(false);
-	pdlg->show();
+	pdlg->open();
 
-	u32 removed = 0;
-	for (const auto& serial : serials)
+	BatchActionBySerials(pdlg, serials, tr("%0/%1 custom pad configurations cleared"),
+	[this](const std::string& serial)
 	{
-		if (pdlg->wasCanceled())
-		{
-			break;
-		}
-		QApplication::processEvents();
-
-		if (RemoveCustomPadConfiguration(serial))
-		{
-			pdlg->SetValue(++removed);
-		}
-	}
-
-	if (pdlg->wasCanceled())
+		return Emu.IsStopped(true) && RemoveCustomPadConfiguration(serial);
+	},
+	[this](u32 removed, u32 total)
 	{
-		pdlg->deleteLater(); // We did not allow deletion earlier to prevent segfaults when canceling.
 		game_list_log.notice("Custom Pad Configuration Batch Removal was canceled. %d/%d custom pad configurations cleared", removed, total);
-	}
-	else
-	{
-		pdlg->SetDeleteOnClose();
-		pdlg->setLabelText(tr("%0/%1 custom pad configurations cleared").arg(removed).arg(total));
-		pdlg->setCancelButtonText(tr("OK"));
-		QApplication::beep();
-	}
-
-	Refresh(true);
+	}, true);
 }
 
 void game_list_frame::BatchRemoveShaderCaches()
@@ -2270,7 +2606,7 @@ void game_list_frame::BatchRemoveShaderCaches()
 	}
 
 	std::set<std::string> serials;
-	serials.emplace("vsh");
+	serials.emplace("vsh.self");
 
 	for (const auto& game : m_game_data)
 	{
@@ -2288,35 +2624,17 @@ void game_list_frame::BatchRemoveShaderCaches()
 	progress_dialog* pdlg = new progress_dialog(tr("Shader Cache Batch Removal"), tr("Removing all shader caches"), tr("Cancel"), 0, total, false, this);
 	pdlg->setAutoClose(false);
 	pdlg->setAutoReset(false);
-	pdlg->show();
+	pdlg->open();
 
-	u32 removed = 0;
-	for (const auto& serial : serials)
+	BatchActionBySerials(pdlg, serials, tr("%0/%1 shader caches cleared"),
+	[this](const std::string& serial)
 	{
-		if (pdlg->wasCanceled())
-		{
-			break;
-		}
-		QApplication::processEvents();
-
-		if (RemoveShadersCache(GetCacheDirBySerial(serial)))
-		{
-			pdlg->SetValue(++removed);
-		}
-	}
-
-	if (pdlg->wasCanceled())
+		return Emu.IsStopped(true) && RemoveShadersCache(GetCacheDirBySerial(serial));
+	},
+	[this](u32 removed, u32 total)
 	{
-		pdlg->deleteLater(); // We did not allow deletion earlier to prevent segfaults when canceling.
-		game_list_log.notice("Shader Cache Batch Removal was canceled");
-	}
-	else
-	{
-		pdlg->SetDeleteOnClose();
-		pdlg->setLabelText(tr("%0/%1 shader caches cleared").arg(removed).arg(total));
-		pdlg->setCancelButtonText(tr("OK"));
-		QApplication::beep();
-	}
+		game_list_log.notice("Shader Cache Batch Removal was canceled. %d/%d cleared", removed, total);
+	}, false);
 }
 
 void game_list_frame::ShowCustomConfigIcon(const game_info& game)
@@ -2432,7 +2750,6 @@ void game_list_frame::FocusAndSelectFirstEntryIfNoneIs()
 void game_list_frame::closeEvent(QCloseEvent *event)
 {
 	SaveSettings();
-	m_gui_settings->sync();
 
 	QDockWidget::closeEvent(event);
 	Q_EMIT GameListFrameClosed();
@@ -2512,7 +2829,16 @@ bool game_list_frame::SearchMatchesApp(const QString& name, const QString& seria
 	if (!m_search_text.isEmpty())
 	{
 		QString search_text = m_search_text.toLower();
-		QString title_name = m_titles.value(serial, name).toLower();
+		QString title_name;
+
+		if (const auto it = m_titles.find(serial); it != m_titles.cend())
+		{
+			title_name = it->second.toLower();
+		}
+		else
+		{
+			title_name = name.toLower();
+		}
 
 		// Ignore trademarks when no search results have been yielded by unmodified search
 		static const QRegularExpression s_ignored_on_fallback(reinterpret_cast<const char*>(u8"[:\\-®©™]+"));
@@ -2667,7 +2993,7 @@ void game_list_frame::SetPlayHoverGifs(bool play)
 	}
 }
 
-const QList<game_info>& game_list_frame::GetGameInfo() const
+const std::vector<game_info>& game_list_frame::GetGameInfo() const
 {
 	return m_game_data;
 }

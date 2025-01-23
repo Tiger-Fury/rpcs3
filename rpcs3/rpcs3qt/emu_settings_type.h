@@ -1,6 +1,6 @@
 #pragma once
 
-#include <QMap>
+#include <map>
 #include <vector>
 
 // Node location
@@ -103,6 +103,7 @@ enum class emu_settings_type
 	DisableMSLFastMath,
 	OutputScalingMode,
 	ForceHwMSAAResolve,
+	DisableAsyncHostMM,
 
 	// Performance Overlay
 	PerfOverlayEnabled,
@@ -111,6 +112,8 @@ enum class emu_settings_type
 	PerfOverlayFramerateDatapoints,
 	PerfOverlayFrametimeDatapoints,
 	PerfOverlayDetailLevel,
+	PerfOverlayFramerateDetailLevel,
+	PerfOverlayFrametimeDetailLevel,
 	PerfOverlayPosition,
 	PerfOverlayUpdateInterval,
 	PerfOverlayFontSize,
@@ -160,9 +163,9 @@ enum class emu_settings_type
 	Buzz,
 	Turntable,
 	GHLtar,
-	GameTablet,
 	MidiDevices,
 	SDLMappings,
+	IoDebugOverlay,
 
 	// Misc
 	ExitRPCS3OnFinish,
@@ -171,10 +174,14 @@ enum class emu_settings_type
 	StartGameFullscreen,
 	PreventDisplaySleep,
 	ShowTrophyPopups,
+	ShowRpcnPopups,
 	UseNativeInterface,
 	ShowShaderCompilationHint,
 	ShowPPUCompilationHint,
+	ShowAutosaveAutoloadHint,
 	ShowPressureIntensityToggleHint,
+	ShowAnalogLimiterToggleHint,
+	ShowMouseAndKeyboardToggleHint,
 	WindowTitleFormat,
 	PauseDuringHomeMenu,
 
@@ -185,6 +192,7 @@ enum class emu_settings_type
 	PSNStatus,
 	BindAddress,
 	EnableUpnp,
+	PSNCountry,
 
 	// System
 	LicenseArea,
@@ -192,13 +200,14 @@ enum class emu_settings_type
 	KeyboardType,
 	EnterButtonAssignment,
 	EnableHostRoot,
+	EmptyHdd0Tmp,
 	LimitCacheSize,
 	MaximumCacheSize,
 	ConsoleTimeOffset,
 };
 
 /** A helper map that keeps track of where a given setting type is located*/
-inline static const QMap<emu_settings_type, cfg_location> settings_location =
+inline static const std::map<emu_settings_type, cfg_location> settings_location =
 {
 	// Core Tab
 	{ emu_settings_type::PPUDecoder,               { "Core", "PPU Decoder"}},
@@ -287,6 +296,7 @@ inline static const QMap<emu_settings_type, cfg_location> settings_location =
 	{ emu_settings_type::DisableMSLFastMath,         { "Video", "Disable MSL Fast Math"}},
 	{ emu_settings_type::OutputScalingMode,          { "Video", "Output Scaling Mode"}},
 	{ emu_settings_type::ForceHwMSAAResolve,         { "Video", "Force Hardware MSAA Resolve"}},
+	{ emu_settings_type::DisableAsyncHostMM,         { "Video", "Disable Asynchronous Memory Manager"}},
 
 	// Vulkan
 	{ emu_settings_type::VulkanAsyncTextureUploads,           { "Video", "Vulkan", "Asynchronous Texture Streaming 2"}},
@@ -301,6 +311,8 @@ inline static const QMap<emu_settings_type, cfg_location> settings_location =
 	{ emu_settings_type::PerfOverlayFramerateDatapoints,   { "Video", "Performance Overlay", "Framerate datapoints" } },
 	{ emu_settings_type::PerfOverlayFrametimeDatapoints,   { "Video", "Performance Overlay", "Frametime datapoints" } },
 	{ emu_settings_type::PerfOverlayDetailLevel,           { "Video", "Performance Overlay", "Detail level" } },
+	{ emu_settings_type::PerfOverlayFramerateDetailLevel,  { "Video", "Performance Overlay", "Framerate graph detail level" } },
+	{ emu_settings_type::PerfOverlayFrametimeDetailLevel,  { "Video", "Performance Overlay", "Frametime graph detail level" } },
 	{ emu_settings_type::PerfOverlayPosition,              { "Video", "Performance Overlay", "Position" } },
 	{ emu_settings_type::PerfOverlayUpdateInterval,        { "Video", "Performance Overlay", "Metrics update interval (ms)" } },
 	{ emu_settings_type::PerfOverlayFontSize,              { "Video", "Performance Overlay", "Font size (px)" } },
@@ -350,9 +362,9 @@ inline static const QMap<emu_settings_type, cfg_location> settings_location =
 	{ emu_settings_type::Buzz,            { "Input/Output", "Buzz emulated controller" }},
 	{ emu_settings_type::Turntable,       { "Input/Output", "Turntable emulated controller" }},
 	{ emu_settings_type::GHLtar,          { "Input/Output", "GHLtar emulated controller" }},
-	{ emu_settings_type::GameTablet,      { "Input/Output", "GameTablet emulated controller" }},
 	{ emu_settings_type::MidiDevices,     { "Input/Output", "Emulated Midi devices" }},
 	{ emu_settings_type::SDLMappings,     { "Input/Output", "Load SDL GameController Mappings" }},
+	{ emu_settings_type::IoDebugOverlay,  { "Input/Output", "IO Debug overlay" }},
 
 	// Misc
 	{ emu_settings_type::ExitRPCS3OnFinish,               { "Miscellaneous", "Exit RPCS3 when process finishes" }},
@@ -361,10 +373,14 @@ inline static const QMap<emu_settings_type, cfg_location> settings_location =
 	{ emu_settings_type::StartGameFullscreen,             { "Miscellaneous", "Start games in fullscreen mode"}},
 	{ emu_settings_type::PreventDisplaySleep,             { "Miscellaneous", "Prevent display sleep while running games"}},
 	{ emu_settings_type::ShowTrophyPopups,                { "Miscellaneous", "Show trophy popups"}},
+	{ emu_settings_type::ShowRpcnPopups,                  { "Miscellaneous", "Show RPCN popups"}},
 	{ emu_settings_type::UseNativeInterface,              { "Miscellaneous", "Use native user interface"}},
 	{ emu_settings_type::ShowShaderCompilationHint,       { "Miscellaneous", "Show shader compilation hint"}},
 	{ emu_settings_type::ShowPPUCompilationHint,          { "Miscellaneous", "Show PPU compilation hint"}},
+	{ emu_settings_type::ShowAutosaveAutoloadHint,        { "Miscellaneous", "Show autosave/autoload hint"}},
 	{ emu_settings_type::ShowPressureIntensityToggleHint, { "Miscellaneous", "Show pressure intensity toggle hint"}},
+	{ emu_settings_type::ShowAnalogLimiterToggleHint,     { "Miscellaneous", "Show analog limiter toggle hint"}},
+	{ emu_settings_type::ShowMouseAndKeyboardToggleHint,  { "Miscellaneous", "Show mouse and keyboard toggle hint"}},
 	{ emu_settings_type::SilenceAllLogs,                  { "Miscellaneous", "Silence All Logs" }},
 	{ emu_settings_type::WindowTitleFormat,               { "Miscellaneous", "Window Title Format" }},
 	{ emu_settings_type::PauseDuringHomeMenu,             { "Miscellaneous", "Pause Emulation During Home Menu" }},
@@ -376,6 +392,7 @@ inline static const QMap<emu_settings_type, cfg_location> settings_location =
 	{ emu_settings_type::PSNStatus,      { "Net", "PSN status"}},
 	{ emu_settings_type::BindAddress,    { "Net", "Bind address"}},
 	{ emu_settings_type::EnableUpnp,     { "Net", "UPNP Enabled"}},
+	{ emu_settings_type::PSNCountry,     { "Net", "PSN Country"}},
 
 	// System
 	{ emu_settings_type::LicenseArea,           { "System", "License Area"}},
@@ -383,6 +400,7 @@ inline static const QMap<emu_settings_type, cfg_location> settings_location =
 	{ emu_settings_type::KeyboardType,          { "System", "Keyboard Type"} },
 	{ emu_settings_type::EnterButtonAssignment, { "System", "Enter button assignment"}},
 	{ emu_settings_type::EnableHostRoot,        { "VFS", "Enable /host_root/"}},
+	{ emu_settings_type::EmptyHdd0Tmp,          { "VFS", "Empty /dev_hdd0/tmp/"}},
 	{ emu_settings_type::LimitCacheSize,        { "VFS", "Limit disk cache size"}},
 	{ emu_settings_type::MaximumCacheSize,      { "VFS", "Disk cache maximum size (MB)"}},
 	{ emu_settings_type::ConsoleTimeOffset,     { "System", "Console time offset (s)"}},

@@ -20,6 +20,7 @@
 #include "Utilities/File.h"
 
 #include "Input/pad_thread.h"
+#include "Input/gui_pad_thread.h"
 #include "Input/product_info.h"
 #include "Input/keyboard_pad_handler.h"
 
@@ -182,6 +183,9 @@ pad_settings_dialog::pad_settings_dialog(std::shared_ptr<gui_settings> gui_setti
 	ui->chooseClass->addItem(tr("PS Move Navigation"), u32{CELL_PAD_PCLASS_TYPE_NAVIGATION});
 	ui->chooseClass->addItem(tr("Skateboard"),         u32{CELL_PAD_PCLASS_TYPE_SKATEBOARD});
 	ui->chooseClass->addItem(tr("GunCon 3"),           u32{CELL_PAD_FAKE_TYPE_GUNCON3});
+	ui->chooseClass->addItem(tr("Top Shot Elite"),     u32{CELL_PAD_FAKE_TYPE_TOP_SHOT_ELITE});
+	ui->chooseClass->addItem(tr("Top Shot Fearmaster"),u32{CELL_PAD_FAKE_TYPE_TOP_SHOT_FEARMASTER});
+	ui->chooseClass->addItem(tr("uDraw GameTablet"),   u32{CELL_PAD_FAKE_TYPE_GAMETABLET});
 
 	connect(ui->chooseClass, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index)
 	{
@@ -230,7 +234,6 @@ pad_settings_dialog::pad_settings_dialog(std::shared_ptr<gui_settings> gui_setti
 void pad_settings_dialog::closeEvent(QCloseEvent* event)
 {
 	m_gui_settings->SetValue(gui::pads_geometry, saveGeometry());
-	m_gui_settings->sync();
 
 	QDialog::closeEvent(event);
 }
@@ -242,6 +245,8 @@ pad_settings_dialog::~pad_settings_dialog()
 		m_input_thread_state = input_thread_state::pausing;
 		*m_input_thread = thread_state::finished;
 	}
+
+	gui_pad_thread::reset();
 
 	if (!Emu.IsStopped())
 	{
@@ -309,6 +314,8 @@ void pad_settings_dialog::InitButtons()
 	insert_button(button_ids::id_pad_rstick_up, ui->b_rstick_up);
 
 	insert_button(button_ids::id_pressure_intensity, ui->b_pressure_intensity);
+	insert_button(button_ids::id_analog_limiter, ui->b_analog_limiter);
+	insert_button(button_ids::id_orientation_reset, ui->b_orientation_reset);
 
 	m_pad_buttons->addButton(ui->b_refresh, button_ids::id_refresh);
 	m_pad_buttons->addButton(ui->b_addConfig, button_ids::id_add_config_file);
@@ -328,33 +335,25 @@ void pad_settings_dialog::InitButtons()
 		}
 	});
 
-	connect(ui->chb_vibration_large, &QCheckBox::clicked, this, [this](bool checked)
+	connect(ui->sb_vibration_large, &QSpinBox::valueChanged, this, [this](int value)
 	{
-		if (!checked)
-		{
-			return;
-		}
+		const u8 force = static_cast<u8>(std::clamp(m_max_force * (value / 100.0f), 0.0f, 255.0f));
+		ui->chb_vibration_switch->isChecked() ? SetPadData(m_min_force, force)
+		                                      : SetPadData(force, m_min_force);
 
-		ui->chb_vibration_switch->isChecked() ? SetPadData(m_min_force, m_max_force)
-		                                      : SetPadData(m_max_force, m_min_force);
-
-		QTimer::singleShot(300, [this]()
+		QTimer::singleShot(300, this, [this]()
 		{
 			SetPadData(m_min_force, m_min_force);
 		});
 	});
 
-	connect(ui->chb_vibration_small, &QCheckBox::clicked, this, [this](bool checked)
+	connect(ui->sb_vibration_small, &QSpinBox::valueChanged, this, [this](int value)
 	{
-		if (!checked)
-		{
-			return;
-		}
+		const u8 force = static_cast<u8>(std::clamp(m_max_force * (value / 100.0f), 0.0f, 255.0f));
+		ui->chb_vibration_switch->isChecked() ? SetPadData(force, m_min_force)
+		                                      : SetPadData(m_min_force, force);
 
-		ui->chb_vibration_switch->isChecked() ? SetPadData(m_max_force, m_min_force)
-		                                      : SetPadData(m_min_force, m_max_force);
-
-		QTimer::singleShot(300, [this]()
+		QTimer::singleShot(300, this, [this]()
 		{
 			SetPadData(m_min_force, m_min_force);
 		});
@@ -365,12 +364,12 @@ void pad_settings_dialog::InitButtons()
 		checked ? SetPadData(m_min_force, m_max_force)
 		        : SetPadData(m_max_force, m_min_force);
 
-		QTimer::singleShot(200, [this, checked]()
+		QTimer::singleShot(200, this, [this, checked]()
 		{
 			checked ? SetPadData(m_max_force, m_min_force)
 			        : SetPadData(m_min_force, m_max_force);
 
-			QTimer::singleShot(200, [this]()
+			QTimer::singleShot(200, this, [this]()
 			{
 				SetPadData(m_min_force, m_min_force);
 			});
@@ -441,90 +440,13 @@ void pad_settings_dialog::InitButtons()
 		if (ui->chooseDevice->isEnabled() && ui->chooseDevice->currentIndex() >= 0)
 		{
 			start_input_thread();
-			m_timer_input.start(1);
+			m_timer_input.start(10);
 			m_timer_pad_refresh.start(1000);
 		}
 	});
 
-	// Enable Button Remapping
-	const auto callback = [this](PadHandlerBase::connection status, u16 val, std::string name, std::string pad_name, u32 battery_level, pad_preview_values preview_values)
-	{
-		SwitchPadInfo(pad_name, true);
-
-		if (!m_enable_buttons && !m_remap_timer.isActive())
-		{
-			SwitchButtons(true);
-		}
-
-		if (m_handler->has_deadzones())
-		{
-			ui->preview_trigger_left->setValue(preview_values[0]);
-			ui->preview_trigger_right->setValue(preview_values[1]);
-
-			if (m_lx != preview_values[2] || m_ly != preview_values[3])
-			{
-				m_lx = preview_values[2];
-				m_ly = preview_values[3];
-				RepaintPreviewLabel(ui->preview_stick_left, ui->slider_stick_left->value(), ui->anti_deadzone_slider_stick_left->value(), ui->slider_stick_left->size().width(), m_lx, m_ly, ui->squircle_left->value(), ui->stick_multi_left->value());
-			}
-			if (m_rx != preview_values[4] || m_ry != preview_values[5])
-			{
-				m_rx = preview_values[4];
-				m_ry = preview_values[5];
-				RepaintPreviewLabel(ui->preview_stick_right, ui->slider_stick_right->value(), ui->anti_deadzone_slider_stick_right->value(), ui->slider_stick_right->size().width(), m_rx, m_ry, ui->squircle_right->value(), ui->stick_multi_right->value());
-			}
-		}
-
-		ui->pb_battery->setValue(m_enable_battery ? battery_level : 0);
-
-		if (val <= 0 || status == PadHandlerBase::connection::no_data)
-		{
-			return;
-		}
-
-		cfg_log.notice("get_next_button_press: %s device %s button %s pressed with value %d", m_handler->m_type, pad_name, name, val);
-
-		if (m_button_id > button_ids::id_pad_begin && m_button_id < button_ids::id_pad_end)
-		{
-			m_cfg_entries[m_button_id].insert_key(name, m_enable_multi_binding);
-			ReactivateButtons();
-		}
-	};
-
-	// Disable Button Remapping
-	const auto fail_callback = [this](const std::string& pad_name)
-	{
-		SwitchPadInfo(pad_name, false);
-
-		if (m_enable_buttons)
-		{
-			SwitchButtons(false);
-		}
-
-		ui->pb_battery->setValue(0);
-
-		if (m_handler->has_deadzones())
-		{
-			ui->preview_trigger_left->setValue(0);
-			ui->preview_trigger_right->setValue(0);
-
-			if (m_lx != 0 || m_ly != 0)
-			{
-				m_lx = 0;
-				m_ly = 0;
-				RepaintPreviewLabel(ui->preview_stick_left, ui->slider_stick_left->value(), ui->anti_deadzone_slider_stick_left->value(), ui->slider_stick_left->size().width(), m_lx, m_ly, ui->squircle_left->value(), ui->stick_multi_left->value());
-			}
-			if (m_rx != 0 || m_ry != 0)
-			{
-				m_rx = 0;
-				m_ry = 0;
-				RepaintPreviewLabel(ui->preview_stick_right, ui->slider_stick_right->value(), ui->anti_deadzone_slider_stick_right->value(), ui->slider_stick_right->size().width(), m_rx, m_ry, ui->squircle_right->value(), ui->stick_multi_right->value());
-			}
-		}
-	};
-
 	// Use timer to display button input
-	connect(&m_timer_input, &QTimer::timeout, this, [this, callback, fail_callback]()
+	connect(&m_timer_input, &QTimer::timeout, this, [this]()
 	{
 		input_callback_data data;
 		{
@@ -533,16 +455,63 @@ void pad_settings_dialog::InitButtons()
 			m_input_callback_data.has_new_data = false;
 		}
 
-		if (data.has_new_data)
+		if (!data.has_new_data)
 		{
-			if (data.status == PadHandlerBase::connection::disconnected)
+			return;
+		}
+
+		const auto update_preview = [this](const std::string& pad_name, bool is_connected, int battery_level, int trigger_left, int trigger_right, int lx, int ly, int rx, int ry)
+		{
+			SwitchPadInfo(pad_name, is_connected);
+
+			if (is_connected != m_enable_buttons && (!is_connected || !m_remap_timer.isActive()))
 			{
-				fail_callback(data.pad_name);
+				SwitchButtons(is_connected);
 			}
-			else
+
+			ui->pb_battery->setValue(m_enable_battery ? battery_level : 0);
+
+			if (m_handler->has_deadzones())
 			{
-				callback(data.status, data.val, std::move(data.name), std::move(data.pad_name), data.battery_level, std::move(data.preview_values));
+				ui->preview_trigger_left->setValue(trigger_left);
+				ui->preview_trigger_right->setValue(trigger_right);
+
+				if (m_lx != lx || m_ly != ly)
+				{
+					m_lx = lx;
+					m_ly = ly;
+					RepaintPreviewLabel(ui->preview_stick_left, ui->slider_stick_left->value(), ui->anti_deadzone_slider_stick_left->value(), ui->slider_stick_left->size().width(), m_lx, m_ly, ui->squircle_left->value(), ui->stick_multi_left->value());
+				}
+				if (m_rx != rx || m_ry != ry)
+				{
+					m_rx = rx;
+					m_ry = ry;
+					RepaintPreviewLabel(ui->preview_stick_right, ui->slider_stick_right->value(), ui->anti_deadzone_slider_stick_right->value(), ui->slider_stick_right->size().width(), m_rx, m_ry, ui->squircle_right->value(), ui->stick_multi_right->value());
+				}
 			}
+		};
+
+		if (data.status == PadHandlerBase::connection::disconnected)
+		{
+			// Disable Button Remapping
+			update_preview(data.pad_name, false, 0, 0, 0, 0, 0, 0, 0);
+			return;
+		}
+
+		// Enable Button Remapping
+		update_preview(data.pad_name, true, data.battery_level, data.preview_values[0], data.preview_values[1], data.preview_values[2], data.preview_values[3], data.preview_values[4], data.preview_values[5]);
+
+		if (data.val <= 0 || data.status == PadHandlerBase::connection::no_data)
+		{
+			return;
+		}
+
+		cfg_log.notice("get_next_button_press: %s device %s button %s pressed with value %d", m_handler->m_type, data.pad_name, data.name, data.val);
+
+		if (m_button_id > button_ids::id_pad_begin && m_button_id < button_ids::id_pad_end && m_button_id == data.button_id)
+		{
+			m_cfg_entries[m_button_id].insert_key(data.name, m_enable_multi_binding);
+			ReactivateButtons();
 		}
 	});
 
@@ -552,6 +521,8 @@ void pad_settings_dialog::InitButtons()
 	// Use thread to get button input
 	m_input_thread = std::make_unique<named_thread<std::function<void()>>>("Pad Settings Thread", [this]()
 	{
+		u32 button_id = button_ids::id_pad_begin; // Used to check if this is the first call during a remap
+
 		while (thread_ctrl::state() != thread_state::aborting)
 		{
 			thread_ctrl::wait_for(1000);
@@ -572,14 +543,26 @@ void pad_settings_dialog::InitButtons()
 
 			const std::vector<std::string> buttons =
 			{
-				m_cfg_entries[button_ids::id_pad_l2].keys, m_cfg_entries[button_ids::id_pad_r2].keys, m_cfg_entries[button_ids::id_pad_lstick_left].keys,
-				m_cfg_entries[button_ids::id_pad_lstick_right].keys, m_cfg_entries[button_ids::id_pad_lstick_down].keys, m_cfg_entries[button_ids::id_pad_lstick_up].keys,
-				m_cfg_entries[button_ids::id_pad_rstick_left].keys, m_cfg_entries[button_ids::id_pad_rstick_right].keys, m_cfg_entries[button_ids::id_pad_rstick_down].keys,
+				m_cfg_entries[button_ids::id_pad_l2].keys,
+				m_cfg_entries[button_ids::id_pad_r2].keys,
+				m_cfg_entries[button_ids::id_pad_lstick_left].keys,
+				m_cfg_entries[button_ids::id_pad_lstick_right].keys,
+				m_cfg_entries[button_ids::id_pad_lstick_down].keys,
+				m_cfg_entries[button_ids::id_pad_lstick_up].keys,
+				m_cfg_entries[button_ids::id_pad_rstick_left].keys,
+				m_cfg_entries[button_ids::id_pad_rstick_right].keys,
+				m_cfg_entries[button_ids::id_pad_rstick_down].keys,
 				m_cfg_entries[button_ids::id_pad_rstick_up].keys
 			};
 
+			// Check if this is the first call during a remap
+			const u32 new_button_id = m_button_id;
+			const bool is_mapping = new_button_id > button_ids::id_pad_begin && new_button_id < button_ids::id_pad_end;
+			const bool first_call = std::exchange(button_id, new_button_id) != button_id && is_mapping;
+			const PadHandlerBase::gui_call_type call_type = first_call ? PadHandlerBase::gui_call_type::reset_input : PadHandlerBase::gui_call_type::normal;
+
 			const PadHandlerBase::connection status = m_handler->get_next_button_press(m_device_name,
-				[this](u16 val, std::string name, std::string pad_name, u32 battery_level, pad_preview_values preview_values)
+				[this, button_id](u16 val, std::string name, std::string pad_name, u32 battery_level, pad_preview_values preview_values)
 				{
 					std::lock_guard lock(m_input_mutex);
 					m_input_callback_data.val = val;
@@ -589,15 +572,17 @@ void pad_settings_dialog::InitButtons()
 					m_input_callback_data.preview_values = std::move(preview_values);
 					m_input_callback_data.has_new_data = true;
 					m_input_callback_data.status = PadHandlerBase::connection::connected;
+					m_input_callback_data.button_id = button_id;
 				},
-				[this](std::string pad_name)
+				[this, button_id](std::string pad_name)
 				{
 					std::lock_guard lock(m_input_mutex);
 					m_input_callback_data.pad_name = std::move(pad_name);
 					m_input_callback_data.has_new_data = true;
 					m_input_callback_data.status = PadHandlerBase::connection::disconnected;
+					m_input_callback_data.button_id = button_id;
 				},
-				false, buttons);
+				call_type, buttons);
 
 			if (status == PadHandlerBase::connection::no_data)
 			{
@@ -605,6 +590,7 @@ void pad_settings_dialog::InitButtons()
 				m_input_callback_data.pad_name = m_device_name;
 				m_input_callback_data.has_new_data = true;
 				m_input_callback_data.status = status;
+				m_input_callback_data.button_id = button_id;
 			}
 		}
 	});
@@ -622,17 +608,17 @@ void pad_settings_dialog::RefreshPads()
 		}
 
 		std::lock_guard lock(m_handler_mutex);
-		const PadHandlerBase::connection status = m_handler->get_next_button_press(info.name, nullptr, nullptr, false);
+		const PadHandlerBase::connection status = m_handler->get_next_button_press(info.name, nullptr, nullptr, PadHandlerBase::gui_call_type::get_connection, {});
 		switch_pad_info(i, info, status != PadHandlerBase::connection::disconnected);
 	}
 }
 
-void pad_settings_dialog::SetPadData(u32 large_motor, u32 small_motor, bool led_battery_indicator)
+void pad_settings_dialog::SetPadData(u8 large_motor, u8 small_motor, bool led_battery_indicator)
 {
-	ensure(m_handler);
 	const cfg_pad& cfg = GetPlayerConfig();
 
 	std::lock_guard lock(m_handler_mutex);
+	ensure(m_handler);
 	m_handler->SetPadData(m_device_name, GetPlayerIndex(), large_motor, small_motor, cfg.colorR, cfg.colorG, cfg.colorB, cfg.player_led_enabled.get(), led_battery_indicator, cfg.led_battery_indicator_brightness);
 }
 
@@ -729,6 +715,8 @@ void pad_settings_dialog::ReloadButtons()
 	updateButton(button_ids::id_pad_rstick_up, ui->b_rstick_up, &cfg.rs_up);
 
 	updateButton(button_ids::id_pressure_intensity, ui->b_pressure_intensity, &cfg.pressure_intensity_button);
+	updateButton(button_ids::id_analog_limiter, ui->b_analog_limiter, &cfg.analog_limiter_button);
+	updateButton(button_ids::id_orientation_reset, ui->b_orientation_reset, &cfg.orientation_reset_button);
 
 	UpdateLabels(true);
 }
@@ -774,7 +762,7 @@ void pad_settings_dialog::ReactivateButtons()
 	ui->chooseProduct->setFocusPolicy(Qt::WheelFocus);
 }
 
-void pad_settings_dialog::RepaintPreviewLabel(QLabel* l, int deadzone, int anti_deadzone, int desired_width, int x, int y, int squircle, double multiplier) const
+void pad_settings_dialog::RepaintPreviewLabel(QLabel* label, int deadzone, int anti_deadzone, int desired_width, int x, int y, int squircle, double multiplier) const
 {
 	desired_width = 100; // Let's keep a fixed size for these labels for now
 	const qreal deadzone_max = m_handler ? m_handler->thumb_max : 255; // 255 used as fallback. The deadzone circle shall be small.
@@ -860,7 +848,9 @@ void pad_settings_dialog::RepaintPreviewLabel(QLabel* l, int deadzone, int anti_
 		painter.drawEllipse(QRectF(ingame_x - 0.5, ingame_y - 0.5, 1.0, 1.0));
 	}
 
-	l->setPixmap(pixmap);
+	painter.end();
+
+	label->setPixmap(pixmap);
 }
 
 void pad_settings_dialog::keyPressEvent(QKeyEvent *keyEvent)
@@ -885,11 +875,11 @@ void pad_settings_dialog::keyPressEvent(QKeyEvent *keyEvent)
 
 	if (m_button_id <= button_ids::id_pad_begin || m_button_id >= button_ids::id_pad_end)
 	{
-		cfg_log.error("Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id);
+		cfg_log.error("Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id.load());
 	}
 	else
 	{
-		m_cfg_entries[m_button_id].insert_key(keyboard_pad_handler::GetKeyName(keyEvent), m_enable_multi_binding);
+		m_cfg_entries[m_button_id].insert_key(keyboard_pad_handler::GetKeyName(keyEvent, false), m_enable_multi_binding);
 	}
 
 	ReactivateButtons();
@@ -912,7 +902,7 @@ void pad_settings_dialog::mouseReleaseEvent(QMouseEvent* event)
 
 	if (m_button_id <= button_ids::id_pad_begin || m_button_id >= button_ids::id_pad_end)
 	{
-		cfg_log.error("Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id);
+		cfg_log.error("Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id.load());
 	}
 	else
 	{
@@ -939,7 +929,7 @@ void pad_settings_dialog::wheelEvent(QWheelEvent *event)
 
 	if (m_button_id <= button_ids::id_pad_begin || m_button_id >= button_ids::id_pad_end)
 	{
-		cfg_log.error("Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id);
+		cfg_log.error("Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id.load());
 		return;
 	}
 
@@ -999,29 +989,30 @@ void pad_settings_dialog::mouseMoveEvent(QMouseEvent* event)
 
 	if (m_button_id <= button_ids::id_pad_begin || m_button_id >= button_ids::id_pad_end)
 	{
-		cfg_log.error("Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id);
+		cfg_log.error("Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id.load());
 	}
 	else
 	{
+		constexpr int delta_threshold = 20;
 		const QPoint mouse_pos = QCursor::pos();
 		const int delta_x = mouse_pos.x() - m_last_pos.x();
 		const int delta_y = mouse_pos.y() - m_last_pos.y();
 
 		u32 key = 0;
 
-		if (delta_x > 100)
+		if (delta_x > delta_threshold)
 		{
 			key = mouse::move_right;
 		}
-		else if (delta_x < -100)
+		else if (delta_x < -delta_threshold)
 		{
 			key = mouse::move_left;
 		}
-		else if (delta_y > 100)
+		else if (delta_y > delta_threshold)
 		{
 			key = mouse::move_down;
 		}
-		else if (delta_y < -100)
+		else if (delta_y < -delta_threshold)
 		{
 			key = mouse::move_up;
 		}
@@ -1120,8 +1111,12 @@ void pad_settings_dialog::UpdateLabels(bool is_reset)
 			}
 		}
 
-		ui->chb_vibration_large->setChecked(cfg.enable_vibration_motor_large.get());
-		ui->chb_vibration_small->setChecked(cfg.enable_vibration_motor_small.get());
+		ui->sb_vibration_large->setRange(cfg.multiplier_vibration_motor_large.min, cfg.multiplier_vibration_motor_large.max);
+		ui->sb_vibration_large->setValue(cfg.multiplier_vibration_motor_large.get());
+
+		ui->sb_vibration_small->setRange(cfg.multiplier_vibration_motor_small.min, cfg.multiplier_vibration_motor_small.max);
+		ui->sb_vibration_small->setValue(cfg.multiplier_vibration_motor_small.get());
+
 		ui->chb_vibration_switch->setChecked(cfg.switch_vibration_motors.get());
 
 		// Update Trigger Thresholds
@@ -1184,14 +1179,10 @@ void pad_settings_dialog::UpdateLabels(bool is_reset)
 		range = cfg.lstickmultiplier.to_list();
 		ui->stick_multi_left->setRange(std::stod(range.front()) / 100.0, std::stod(range.back()) / 100.0);
 		ui->stick_multi_left->setValue(cfg.lstickmultiplier / 100.0);
-		ui->kb_stick_multi_left->setRange(std::stod(range.front()) / 100.0, std::stod(range.back()) / 100.0);
-		ui->kb_stick_multi_left->setValue(cfg.lstickmultiplier / 100.0);
 
 		range = cfg.rstickmultiplier.to_list();
 		ui->stick_multi_right->setRange(std::stod(range.front()) / 100.0, std::stod(range.back()) / 100.0);
 		ui->stick_multi_right->setValue(cfg.rstickmultiplier / 100.0);
-		ui->kb_stick_multi_right->setRange(std::stod(range.front()) / 100.0, std::stod(range.back()) / 100.0);
-		ui->kb_stick_multi_right->setValue(cfg.rstickmultiplier / 100.0);
 
 		// Update Squircle Factors
 		range = cfg.lpadsquircling.to_list();
@@ -1204,6 +1195,12 @@ void pad_settings_dialog::UpdateLabels(bool is_reset)
 
 		RepaintPreviewLabel(ui->preview_stick_left, ui->slider_stick_left->value(), ui->anti_deadzone_slider_stick_left->value(), ui->slider_stick_left->size().width(), m_lx, m_ly, cfg.lpadsquircling, cfg.lstickmultiplier / 100.0);
 		RepaintPreviewLabel(ui->preview_stick_right, ui->slider_stick_right->value(), ui->anti_deadzone_slider_stick_right->value(), ui->slider_stick_right->size().width(), m_rx, m_ry, cfg.rpadsquircling, cfg.rstickmultiplier / 100.0);
+
+		// Update orientation toggle
+		ui->cb_orientation_toggle->setChecked(cfg.orientation_enabled.get());
+
+		// Update analog limiter toggle mode
+		ui->cb_analog_limiter_toggle_mode->setChecked(cfg.analog_limiter_toggle_mode.get());
 
 		// Update pressure sensitivity factors
 		range = cfg.pressure_intensity.to_list();
@@ -1251,12 +1248,12 @@ void pad_settings_dialog::SwitchButtons(bool is_enabled)
 	ui->chb_show_emulated_values->setEnabled(is_enabled);
 	ui->stick_multi_left->setEnabled(is_enabled);
 	ui->stick_multi_right->setEnabled(is_enabled);
-	ui->kb_stick_multi_left->setEnabled(is_enabled);
-	ui->kb_stick_multi_right->setEnabled(is_enabled);
 	ui->squircle_left->setEnabled(is_enabled);
 	ui->squircle_right->setEnabled(is_enabled);
 	ui->gb_pressure_intensity_deadzone->setEnabled(is_enabled);
 	ui->gb_pressure_intensity->setEnabled(is_enabled && m_enable_pressure_intensity_button);
+	ui->gb_analog_limiter->setEnabled(is_enabled && m_enable_analog_limiter_button);
+	ui->gb_orientation_reset->setEnabled(is_enabled && m_enable_orientation_reset_button);
 	ui->gb_vibration->setEnabled(is_enabled && m_enable_rumble);
 	ui->gb_motion_controls->setEnabled(is_enabled && m_enable_motion);
 	ui->gb_stick_deadzones->setEnabled(is_enabled && m_enable_deadzones);
@@ -1300,7 +1297,7 @@ void pad_settings_dialog::OnPadButtonClicked(int id)
 	case button_ids::id_blacklist:
 	{
 		std::lock_guard lock(m_handler_mutex);
-		[[maybe_unused]] const PadHandlerBase::connection status = m_handler->get_next_button_press(m_device_name, nullptr, nullptr, true);
+		[[maybe_unused]] const PadHandlerBase::connection status = m_handler->get_next_button_press(m_device_name, nullptr, nullptr, PadHandlerBase::gui_call_type::blacklist, {});
 		return;
 	}
 	default:
@@ -1312,6 +1309,9 @@ void pad_settings_dialog::OnPadButtonClicked(int id)
 	{
 		m_enable_multi_binding = true;
 	}
+
+	// On alt+click or alt+space allow to handle triggers as the entire stick axis
+	m_handler->set_trigger_recognition_mode((QApplication::keyboardModifiers() & Qt::KeyboardModifier::AltModifier) ? PadHandlerBase::trigger_recognition_mode::two_directional : PadHandlerBase::trigger_recognition_mode::one_directional);
 
 	for (auto but : m_pad_buttons->buttons())
 	{
@@ -1422,6 +1422,7 @@ void pad_settings_dialog::ChangeHandler()
 		break;
 	case pad_handler::keyboard: m_description = tooltips.gamepad_settings.keyboard; break;
 	case pad_handler::skateboard: m_description = tooltips.gamepad_settings.skateboard; break;
+	case pad_handler::move: m_description = tooltips.gamepad_settings.move; break;
 #ifdef _WIN32
 	case pad_handler::xinput: m_description = tooltips.gamepad_settings.xinput; break;
 	case pad_handler::mm: m_description = tooltips.gamepad_settings.mmjoy; break;
@@ -1446,10 +1447,6 @@ void pad_settings_dialog::ChangeHandler()
 	}
 	ui->l_description->setText(m_description);
 
-	// Update parameters
-	m_min_force = 0;
-	m_max_force = 255;
-
 	// Reset parameters
 	m_lx = 0;
 	m_ly = 0;
@@ -1468,10 +1465,18 @@ void pad_settings_dialog::ChangeHandler()
 	// Enable Pressure Sensitivity Settings
 	m_enable_pressure_intensity_button = m_handler->has_pressure_intensity_button();
 
+	// Enable Analog Limiter Settings
+	m_enable_analog_limiter_button = m_handler->has_analog_limiter_button();
+
+	// Enable Orientation Reset Settings
+	m_enable_orientation_reset_button = m_handler->has_orientation();
+
 	// Change our contextual widgets
 	ui->left_stack->setCurrentIndex((m_handler->m_type == pad_handler::keyboard) ? 1 : 0);
 	ui->right_stack->setCurrentIndex((m_handler->m_type == pad_handler::keyboard) ? 1 : 0);
 	ui->gb_pressure_intensity->setVisible(m_handler->has_pressure_intensity_button());
+	ui->gb_analog_limiter->setVisible(m_handler->has_analog_limiter_button());
+	ui->gb_orientation_reset->setVisible(m_handler->has_orientation());
 
 	// Update device dropdown and block signals while doing so
 	ui->chooseDevice->blockSignals(true);
@@ -1488,6 +1493,7 @@ void pad_settings_dialog::ChangeHandler()
 	case pad_handler::ds4:
 	case pad_handler::dualsense:
 	case pad_handler::skateboard:
+	case pad_handler::move:
 	{
 		const QString name_string = qstr(m_handler->name_string());
 		for (usz i = 1; i <= m_handler->max_devices(); i++) // Controllers 1-n in GUI
@@ -1592,7 +1598,7 @@ void pad_settings_dialog::ChangeHandler()
 	if (ui->chooseDevice->isEnabled() && ui->chooseDevice->currentIndex() >= 0)
 	{
 		start_input_thread();
-		m_timer_input.start(1);
+		m_timer_input.start(10);
 		m_timer_pad_refresh.start(1000);
 	}
 }
@@ -1724,6 +1730,21 @@ void pad_settings_dialog::HandleDeviceClassChange(u32 class_id) const
 			ui->chooseProduct->addItem(tr("GunCon 3", "GunCon 3 Controller"), static_cast<int>(product.type));
 			break;
 		}
+		case input::product_type::top_shot_elite:
+		{
+			ui->chooseProduct->addItem(tr("Top Shot Elite", "Top Shot Elite Controller"), static_cast<int>(product.type));
+			break;
+		}
+		case input::product_type::top_shot_fearmaster:
+		{
+			ui->chooseProduct->addItem(tr("Top Shot Fearmaster", "Top Shot Fearmaster Controller"), static_cast<int>(product.type));
+			break;
+		}
+		case input::product_type::udraw_gametablet:
+		{
+			ui->chooseProduct->addItem(tr("uDraw GameTablet", "uDraw GameTablet Controller"), static_cast<int>(product.type));
+			break;
+		}
 		}
 	}
 }
@@ -1813,8 +1834,11 @@ void pad_settings_dialog::ApplyCurrentPlayerConfig(int new_player_id)
 		for (const auto& [id, button] : m_cfg_entries)
 		{
 			// Let's ignore special keys, unless we're using a keyboard
-			if (id == button_ids::id_pressure_intensity && m_handler->m_type != pad_handler::keyboard)
+			if (m_handler->m_type != pad_handler::keyboard &&
+				(id == button_ids::id_pressure_intensity || id == button_ids::id_analog_limiter || id == button_ids::id_orientation_reset))
+			{
 				continue;
+			}
 
 			for (const std::string& key : cfg_pad::get_buttons(button.keys))
 			{
@@ -1836,24 +1860,16 @@ void pad_settings_dialog::ApplyCurrentPlayerConfig(int new_player_id)
 	// Apply rest of config
 	auto& cfg = player->config;
 
-	if (m_handler->m_type == pad_handler::keyboard)
-	{
-		cfg.lstickmultiplier.set(ui->kb_stick_multi_left->value() * 100);
-		cfg.rstickmultiplier.set(ui->kb_stick_multi_right->value() * 100);
-	}
-	else
-	{
-		cfg.lstickmultiplier.set(ui->stick_multi_left->value() * 100);
-		cfg.rstickmultiplier.set(ui->stick_multi_right->value() * 100);
-	}
+	cfg.lstickmultiplier.set(ui->stick_multi_left->value() * 100);
+	cfg.rstickmultiplier.set(ui->stick_multi_right->value() * 100);
 
 	cfg.lpadsquircling.set(ui->squircle_left->value());
 	cfg.rpadsquircling.set(ui->squircle_right->value());
 
 	if (m_handler->has_rumble())
 	{
-		cfg.enable_vibration_motor_large.set(ui->chb_vibration_large->isChecked());
-		cfg.enable_vibration_motor_small.set(ui->chb_vibration_small->isChecked());
+		cfg.multiplier_vibration_motor_large.set(ui->sb_vibration_large->value());
+		cfg.multiplier_vibration_motor_small.set(ui->sb_vibration_small->value());
 		cfg.switch_vibration_motors.set(ui->chb_vibration_switch->isChecked());
 	}
 
@@ -1867,10 +1883,20 @@ void pad_settings_dialog::ApplyCurrentPlayerConfig(int new_player_id)
 		cfg.rstick_anti_deadzone.set(ui->anti_deadzone_slider_stick_right->value());
 	}
 
+	if (m_handler->has_analog_limiter_button())
+	{
+		cfg.analog_limiter_toggle_mode.set(ui->cb_analog_limiter_toggle_mode->isChecked());
+	}
+
 	if (m_handler->has_pressure_intensity_button())
 	{
 		cfg.pressure_intensity.set(ui->sb_pressure_intensity->value());
 		cfg.pressure_intensity_toggle_mode.set(ui->cb_pressure_intensity_toggle_mode->isChecked());
+	}
+
+	if (m_handler->has_orientation())
+	{
+		cfg.orientation_enabled.set(ui->cb_orientation_toggle->isChecked());
 	}
 
 	cfg.pressure_intensity_deadzone.set(ui->pressure_intensity_deadzone->value());
@@ -1947,6 +1973,7 @@ QString pad_settings_dialog::GetLocalizedPadHandler(const QString& original, pad
 		case pad_handler::ds4: return tr("DualShock 4");
 		case pad_handler::dualsense: return tr("DualSense");
 		case pad_handler::skateboard: return tr("Skateboard");
+		case pad_handler::move: return tr("PS Move");
 #ifdef _WIN32
 		case pad_handler::xinput: return tr("XInput");
 		case pad_handler::mm: return tr("MMJoystick");
@@ -1971,6 +1998,7 @@ QString pad_settings_dialog::GetLocalizedPadName(pad_handler handler, const QStr
 		case pad_handler::ds4: return tr("DS4 Pad #%0").arg(index);
 		case pad_handler::dualsense: return tr("DualSense Pad #%0").arg(index);
 		case pad_handler::skateboard: return tr("Skateboard #%0").arg(index);
+		case pad_handler::move: return tr("PS Move #%0").arg(index);
 #ifdef _WIN32
 		case pad_handler::xinput: return tr("XInput Pad #%0").arg(index);
 		case pad_handler::mm: return tr("Joystick #%0").arg(index);
@@ -1992,7 +2020,7 @@ bool pad_settings_dialog::GetIsLddPad(u32 index) const
 	if (!Emu.IsStopped() && (m_title_id.empty() || m_title_id == Emu.GetTitleID()))
 	{
 		std::lock_guard lock(pad::g_pad_mutex);
-		if (const auto handler = pad::get_current_handler(true))
+		if (const auto handler = pad::get_pad_thread(true))
 		{
 			ensure(index < handler->GetPads().size());
 
@@ -2062,11 +2090,12 @@ void pad_settings_dialog::SubscribeTooltips()
 	// Localized tooltips
 	const Tooltips tooltips;
 
+	SubscribeTooltip(ui->gb_orientation_reset, tooltips.gamepad_settings.orientation_reset);
+	SubscribeTooltip(ui->gb_analog_limiter, tooltips.gamepad_settings.analog_limiter);
 	SubscribeTooltip(ui->gb_pressure_intensity, tooltips.gamepad_settings.pressure_intensity);
 	SubscribeTooltip(ui->gb_pressure_intensity_deadzone, tooltips.gamepad_settings.pressure_deadzone);
 	SubscribeTooltip(ui->gb_squircle, tooltips.gamepad_settings.squircle_factor);
 	SubscribeTooltip(ui->gb_stick_multi, tooltips.gamepad_settings.stick_multiplier);
-	SubscribeTooltip(ui->gb_kb_stick_multi, tooltips.gamepad_settings.stick_multiplier);
 	SubscribeTooltip(ui->gb_vibration, tooltips.gamepad_settings.vibration);
 	SubscribeTooltip(ui->gb_motion_controls, tooltips.gamepad_settings.motion_controls);
 	SubscribeTooltip(ui->gb_stick_deadzones, tooltips.gamepad_settings.stick_deadzones);

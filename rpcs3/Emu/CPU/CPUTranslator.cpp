@@ -4,6 +4,9 @@
 
 #include "util/v128.hpp"
 #include "util/simd.hpp"
+#include "util/logs.hpp"
+
+LOG_CHANNEL(llvm_log, "LLVM");
 
 llvm::LLVMContext g_llvm_ctx;
 
@@ -90,7 +93,13 @@ void cpu_translator::initialize(llvm::LLVMContext& context, llvm::ExecutionEngin
 	m_context = context;
 	m_engine = &engine;
 
-	const auto cpu = m_engine->getTargetMachine()->getTargetCPU();
+	auto cpu = m_engine->getTargetMachine()->getTargetCPU();
+
+	if (cpu == "generic")
+	{
+		// Detection failed, try to guess
+		cpu = fallback_cpu_detection();
+	}
 
 	// Test SSSE3 feature (TODO)
 	if (cpu == "generic" ||
@@ -363,26 +372,115 @@ llvm::Constant* cpu_translator::make_const_vector<v128>(v128 v, llvm::Type* t, u
 
 void cpu_translator::replace_intrinsics(llvm::Function& f)
 {
-	for (auto& bb : f)
+	for (llvm::BasicBlock& bb : f)
 	{
-		for (auto bit = bb.begin(); bit != bb.end();)
+		std::set<std::string, std::less<>> names;
+
+		using InstListType = llvm::BasicBlock::InstListType;
+
+		std::function<InstListType::iterator(InstListType::iterator)> fix_funcs;
+
+		fix_funcs = [&](InstListType::iterator inst_bit)
 		{
-			if (auto ci = llvm::dyn_cast<llvm::CallInst>(&*bit))
+			auto ci = llvm::dyn_cast<llvm::CallInst>(&*inst_bit);
+
+			if (!ci)
 			{
-				if (auto cf = ci->getCalledFunction())
+				return std::next(inst_bit);
+			}
+
+			const auto cf = ci->getCalledFunction();
+
+			if (!cf)
+			{
+				return std::next(inst_bit);
+			}
+
+			std::string_view func_name{cf->getName().data(), cf->getName().size()};
+
+			const auto it = m_intrinsics.find(func_name);
+
+			if (it == m_intrinsics.end())
+			{
+				return std::next(inst_bit);
+			}
+
+			if (!names.empty())
+			{
+				llvm_log.trace("cpu_translator::replace_intrinsics(): function '%s' names_size=%d, names[0]=%s", func_name, names.size(), *names.begin());
+			}
+
+			if (names.contains(func_name))
+			{
+				fmt::throw_exception("cpu_translator::replace_intrinsics(): Recursion detected at function '%s'!", func_name);
+			}
+
+			names.emplace(std::string(func_name));
+
+			// Set insert point after call instruction
+			// In order to obtain a clear range of the inserted instructions
+			if (llvm::Instruction* next = ci->getNextNode())
+			{
+				m_ir->SetInsertPoint(next);
+			}
+			else
+			{
+				m_ir->SetInsertPoint(std::addressof(bb));
+			}
+
+			ci->replaceAllUsesWith(it->second(ci));
+
+			InstListType::iterator end = m_ir->GetInsertPoint();
+
+			for (InstListType::iterator next_it = ci->eraseFromParent(), inner = next_it; inner != end;)
+			{
+				if (llvm::isa<llvm::CallInst>(&*inner))
 				{
-					if (auto it = m_intrinsics.find(std::string_view(cf->getName().data(), cf->getName().size())); it != m_intrinsics.end())
-					{
-						m_ir->SetInsertPoint(ci);
-						ci->replaceAllUsesWith(it->second(ci));
-						bit = ci->eraseFromParent();
-						continue;
-					}
+					inner = fix_funcs(inner);
+				}
+				else
+				{
+					inner++;
 				}
 			}
 
-			++bit;
+			// TODO: Simplify in C++23 with 'names.erase(func_name);'
+			names.erase(ensure(names.find(func_name), FN(x != names.end())));
+			return end;
+		};
+
+		for (auto bit = bb.begin(); bit != bb.end(); bit = fix_funcs(bit))
+		{
 		}
+	}
+}
+
+void cpu_translator::run_transforms(llvm::Function& f)
+{
+	// This pass must run first because the other passes may depend on resolved names.
+	replace_intrinsics(f);
+
+	for (auto& pass : m_transform_passes)
+	{
+		pass->run(m_ir, f);
+	}
+}
+
+void cpu_translator::register_transform_pass(std::unique_ptr<translator_pass>& pass)
+{
+	m_transform_passes.emplace_back(std::move(pass));
+}
+
+void cpu_translator::clear_transforms()
+{
+	m_transform_passes.clear();
+}
+
+void cpu_translator::reset_transforms()
+{
+	for (auto& pass : m_transform_passes)
+	{
+		pass->reset();
 	}
 }
 

@@ -138,6 +138,7 @@ enum class fake_camera_type
 enum class move_handler
 {
 	null,
+	real,
 	fake,
 	mouse,
 	raw_mouse,
@@ -165,12 +166,6 @@ enum class ghltar_handler
 	null,
 	one_controller,
 	two_controllers,
-};
-
-enum class gametablet_handler
-{
-	disabled,
-	enabled,
 };
 
 enum class microphone_handler
@@ -212,9 +207,11 @@ enum class video_aspect
 enum class frame_limit_type
 {
 	none,
+	_30,
 	_50,
 	_60,
-	_30,
+	_120,
+	display_rate,
 	_auto,
 	_ps3,
 	infinite,

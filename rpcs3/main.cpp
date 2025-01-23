@@ -33,7 +33,7 @@
 #ifdef _WIN32
 #include "module_verifier.hpp"
 #include "util/dyn_lib.hpp"
-
+#include <shellapi.h>
 
 // TODO(cjj19970505@live.cn)
 // When compiling with WIN32_LEAN_AND_MEAN definition
@@ -61,6 +61,7 @@ DYNAMIC_IMPORT("ntdll.dll", NtSetTimerResolution, NTSTATUS(ULONG DesiredResoluti
 
 #if defined(__APPLE__)
 #include <dispatch/dispatch.h>
+#if defined (__x86_64__)
 // sysinfo_darwin.mm
 namespace Darwin_Version
 {
@@ -68,6 +69,7 @@ namespace Darwin_Version
 	extern int getNSminorVersion();
 	extern int getNSpatchVersion();
 }
+#endif
 #endif
 
 #include "Utilities/Config.h"
@@ -108,6 +110,66 @@ extern char **environ;
 
 LOG_CHANNEL(sys_log, "SYS");
 LOG_CHANNEL(q_debug, "QDEBUG");
+
+#ifdef _WIN32
+std::set<std::string> get_one_drive_paths()
+{
+	std::set<std::string> paths;
+
+	// NOTE: Disabled. The environment variables can lead to false positives.
+	//for (const char* key : { "OneDrive", "OneDriveConsumer", "OneDriveCommercial" })
+	//{
+	//	if (const char* env_path = std::getenv(key))
+	//	{
+	//		sys_log.notice("get_one_drive_paths: Found OneDrive env path: '%s' (key='%s')", env_path, key);
+	//		paths.insert(env_path);
+	//	}
+	//}
+
+	for (const wchar_t* key : { L"Software\\Microsoft\\OneDrive\\Accounts\\Personal" })
+	{
+		HKEY hkey = NULL;
+		LSTATUS status = RegOpenKeyW(HKEY_CURRENT_USER, key, &hkey);
+		if (status != ERROR_SUCCESS)
+		{
+			sys_log.trace("get_one_drive_paths: RegOpenKeyW failed: %s (key='%s')", fmt::win_error{static_cast<unsigned long>(status), nullptr}, wchar_to_utf8(key));
+			continue;
+		}
+
+		std::wstring path_buffer;
+		DWORD type = 0U;
+
+		do
+		{
+			path_buffer.resize(path_buffer.size() + MAX_PATH);
+			DWORD buffer_size = static_cast<DWORD>(path_buffer.size() - 1);
+			status = RegQueryValueExW(hkey, L"UserFolder", NULL, &type, reinterpret_cast<LPBYTE>(path_buffer.data()), &buffer_size);
+		}
+		while (status == ERROR_MORE_DATA);
+
+		const LSTATUS close_status = RegCloseKey(hkey);
+		if (close_status != ERROR_SUCCESS)
+		{
+			sys_log.error("get_one_drive_paths: RegCloseKey failed: %s", fmt::win_error{static_cast<unsigned long>(close_status), nullptr});
+		}
+
+		if (status != ERROR_SUCCESS)
+		{
+			sys_log.trace("get_one_drive_paths: RegQueryValueExW failed: %s", fmt::win_error{static_cast<unsigned long>(status), nullptr});
+			continue;
+		}
+
+		if ((type == REG_SZ) || (type == REG_EXPAND_SZ) || (type == REG_MULTI_SZ))
+		{
+			const std::string path = wchar_to_utf8(path_buffer.data());
+			sys_log.notice("get_one_drive_paths: Found OneDrive registry path: '%s' (key='%s')", path, wchar_to_utf8(key));
+			paths.insert(path);
+		}
+	}
+
+	return paths;
+}
+#endif
 
 [[noreturn]] extern void report_fatal_error(std::string_view _text, bool is_html = false, bool include_help_text = true)
 {
@@ -250,11 +312,12 @@ LOG_CHANNEL(q_debug, "QDEBUG");
 
 struct fatal_error_listener final : logs::listener
 {
+public:
 	~fatal_error_listener() override = default;
 
 	void log(u64 /*stamp*/, const logs::message& msg, const std::string& prefix, const std::string& text) override
 	{
-		if (msg <= logs::level::fatal)
+		if (msg == logs::level::fatal || (msg == logs::level::always && m_log_always))
 		{
 			std::string _msg = "RPCS3: ";
 
@@ -274,10 +337,17 @@ struct fatal_error_listener final : logs::listener
 			_msg += '\n';
 
 			// If launched from CMD
-			utils::attach_console(utils::console_stream::std_err, false);
+			utils::attach_console(msg == logs::level::fatal ? utils::console_stream::std_err : utils::console_stream::std_out, false);
 
 			// Output to error stream as is
-			utils::output_stderr(_msg);
+			if (msg == logs::level::fatal)
+			{
+				utils::output_stderr(_msg);
+			}
+			else
+			{
+				std::cout << _msg;
+			}
 
 #ifdef _WIN32
 			if (IsDebuggerPresent())
@@ -293,6 +363,14 @@ struct fatal_error_listener final : logs::listener
 			}
 		}
 	}
+
+	void log_always(bool enabled)
+	{
+		m_log_always = enabled;
+	}
+
+private:
+	bool m_log_always = false;
 };
 
 // Arguments that force a headless application (need to be checked in create_application)
@@ -491,10 +569,8 @@ int main(int argc, char** argv)
 		report_fatal_error(error);
 	}
 
-	// Before we proceed, run some sanity checks
-	run_platform_sanity_checks();
-
 	const std::string lock_name = fs::get_cache_dir() + "RPCS3.buf";
+	const std::string log_name = fs::get_log_dir() + "RPCS3.log";
 
 	static fs::file instance_lock;
 
@@ -513,19 +589,19 @@ int main(int argc, char** argv)
 		{
 			if (fs::exists(lock_name))
 			{
-				report_fatal_error("Another instance of RPCS3 is running.\nClose it or kill its process, if necessary.");
+				report_fatal_error(fmt::format("Another instance of RPCS3 is running.\nClose it or kill its process, if necessary.\n'%s' still exists.", lock_name));
 			}
 
-			report_fatal_error("Cannot create RPCS3.log (access denied)."
+			report_fatal_error(fmt::format("Cannot create '%s' or '%s' (access denied).\n"
 #ifdef _WIN32
-				"\nNote that RPCS3 cannot be installed in Program Files or similar directories with limited permissions."
+				"Note that RPCS3 cannot be installed in Program Files or similar directories with limited permissions."
 #else
-				"\nPlease, check RPCS3 permissions in '~/.config/rpcs3'."
+				"Please, check RPCS3 permissions."
 #endif
-			);
+				, log_name, lock_name));
 		}
 
-		report_fatal_error(fmt::format("Cannot create RPCS3.log (error %s)", fs::g_tls_error));
+		report_fatal_error(fmt::format("Cannot create'%s' or '%s' (error=%s)", log_name, lock_name, fs::g_tls_error));
 	}
 
 #ifdef _WIN32
@@ -541,20 +617,17 @@ int main(int argc, char** argv)
 	}
 #endif
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && defined(__x86_64__)
 	const int osx_ver_major = Darwin_Version::getNSmajorVersion();
 	const int osx_ver_minor = Darwin_Version::getNSminorVersion();
 	if ((osx_ver_major == 14 && osx_ver_minor < 3) && (utils::get_cpu_brand().rfind("VirtualApple", 0) == 0))
 	{
-    	int osx_ver_patch = Darwin_Version::getNSpatchVersion();
+		const int osx_ver_patch = Darwin_Version::getNSpatchVersion();
 		report_fatal_error(fmt::format("RPCS3 requires macOS 14.3.0 or later.\nYou're currently using macOS %i.%i.%i.\nPlease update macOS from System Settings.\n\n", osx_ver_major, osx_ver_minor, osx_ver_patch));
 	}
 #endif
 
 	ensure(thread_ctrl::is_main(), "Not main thread");
-
-	// Initialize TSC freq (in case it isn't)
-	static_cast<void>(utils::get_tsc_freq());
 
 	// Initialize thread pool finalizer (on first use)
 	static_cast<void>(named_thread("", [](int) {}));
@@ -569,10 +642,10 @@ int main(int argc, char** argv)
 		}
 
 		// Limit log size to ~25% of free space
-		log_file = logs::make_file_listener(fs::get_cache_dir() + "RPCS3.log", stats.avail_free / 4);
+		log_file = logs::make_file_listener(log_name, stats.avail_free / 4);
 	}
 
-	static std::unique_ptr<logs::listener> fatal_listener = std::make_unique<fatal_error_listener>();
+	static std::unique_ptr<fatal_error_listener> fatal_listener = std::make_unique<fatal_error_listener>();
 	logs::listener::add(fatal_listener.get());
 
 	{
@@ -592,6 +665,7 @@ int main(int argc, char** argv)
 		logs::stored_message qt{(strcmp(QT_VERSION_STR, qVersion()) != 0) ? sys_log.error : sys_log.notice};
 		qt.text = fmt::format("Qt version: Compiled against Qt %s | Run-time uses Qt %s", QT_VERSION_STR, qVersion());
 
+		// Write current time
 		logs::stored_message time{sys_log.always()};
 		time.text = fmt::format("Current Time: %s", std::chrono::system_clock::now());
 
@@ -607,10 +681,29 @@ int main(int argc, char** argv)
 	std::string argument_str;
 	for (int i = 0; i < argc; i++)
 	{
+		if (i > 0) argument_str += " ";
 		argument_str += '\'' + std::string(argv[i]) + '\'';
-		if (i != argc - 1) argument_str += " ";
 	}
+
 	sys_log.notice("argc: %d, argv: %s", argc, argument_str);
+
+#ifdef _WIN32
+	int n_args = 0;
+	if (LPWSTR* arg_list = CommandLineToArgvW(GetCommandLineW(), &n_args))
+	{
+		std::string utf8_args;
+		for (int i = 0; i < n_args; i++)
+		{
+			if (i > 0) utf8_args += " ";
+			utf8_args += '\'' + wchar_to_utf8(arg_list[i]) + '\'';
+		}
+		LocalFree(arg_list);
+		sys_log.notice("argv_utf8: %s", utf8_args);
+	}
+#endif
+
+	// Before we proceed, run some sanity checks
+	run_platform_sanity_checks();
 
 #ifdef __linux__
 	struct ::rlimit rlim;
@@ -997,6 +1090,10 @@ int main(int argc, char** argv)
 		return 0;
 	}
 
+	// Enable console output of "always" log messages.
+	// Do this after parsing any Qt cli args that might open a window.
+	fatal_listener->log_always(true);
+
 	// Log unique ID
 	gui::utils::log_uuid();
 
@@ -1079,10 +1176,10 @@ int main(int argc, char** argv)
 		{
 			if (Emu.IsPathInsideDir(emu_dir, path.toStdString()))
 			{
-				report_fatal_error(fmt::format(
+				report_fatal_error(QObject::tr(
 					"RPCS3 should never be run from a temporary location!\n"
 					"Please install RPCS3 in a persistent location.\n"
-					"Current location:\n%s", emu_dir));
+					"Current location:\n%0").arg(QString::fromStdString(emu_dir)).toStdString());
 				return 1;
 			}
 		}
@@ -1092,13 +1189,28 @@ int main(int argc, char** argv)
 		{
 			if (emu_dir.find(expr) != umax)
 			{
-				report_fatal_error(fmt::format(
+				report_fatal_error(QObject::tr(
 					"RPCS3 should never be run from an archive!\n"
 					"Please install RPCS3 in a persistent location.\n"
-					"Current location:\n%s", emu_dir));
+					"Current location:\n%0").arg(QString::fromStdString(emu_dir)).toStdString());
 				return 1;
 			}
 		}
+
+#ifdef _WIN32
+		// Check OneDrive locations
+		for (const std::string& one_drive_path : get_one_drive_paths())
+		{
+			if (Emu.IsPathInsideDir(emu_dir, one_drive_path))
+			{
+				report_fatal_error(QObject::tr(
+					"RPCS3 should never be run from a OneDrive path!\n"
+					"Please move RPCS3 to a location not synced by OneDrive.\n"
+					"Current location:\n%0").arg(QString::fromStdString(emu_dir)).toStdString());
+				return 1;
+			}
+		}
+#endif
 	}
 
 // Set timerslack value for Linux. The default value is 50,000ns. Change this to just 1 since we value precise timers.

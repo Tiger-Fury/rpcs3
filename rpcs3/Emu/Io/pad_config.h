@@ -28,6 +28,9 @@ struct cfg_pad final : cfg::node
 	static std::vector<std::string> get_buttons(const std::string& str);
 	static std::string get_buttons(std::vector<std::string> vec);
 
+	u8 get_large_motor_speed(const std::array<VibrateMotor, 2>& motor_speed) const;
+	u8 get_small_motor_speed(const std::array<VibrateMotor, 2>& motor_speed) const;
+
 	cfg::string ls_left{ this, "Left Stick Left", "" };
 	cfg::string ls_down{ this, "Left Stick Down", "" };
 	cfg::string ls_right{ this, "Left Stick Right", "" };
@@ -66,11 +69,16 @@ struct cfg_pad final : cfg::node
 	cfg_sensor motion_sensor_z{ this, "Motion Sensor Z" };
 	cfg_sensor motion_sensor_g{ this, "Motion Sensor G" };
 
+	cfg::string orientation_reset_button{ this, "Orientation Reset Button", "" };
+	cfg::_bool orientation_enabled{ this, "Orientation Enabled", false };
+
 	cfg::string pressure_intensity_button{ this, "Pressure Intensity Button", "" };
 	cfg::uint<0, 100> pressure_intensity{ this, "Pressure Intensity Percent", 50 };
 	cfg::_bool pressure_intensity_toggle_mode{ this, "Pressure Intensity Toggle Mode", false };
 	cfg::uint<0, 255> pressure_intensity_deadzone{ this, "Pressure Intensity Deadzone", 0 };
 
+	cfg::string analog_limiter_button{ this, "Analog Limiter Button", "" };
+	cfg::_bool analog_limiter_toggle_mode{ this, "Analog Limiter Toggle Mode", false };
 	cfg::uint<0, 200> lstickmultiplier{ this, "Left Stick Multiplier", 100 };
 	cfg::uint<0, 200> rstickmultiplier{ this, "Right Stick Multiplier", 100 };
 	cfg::uint<0, 1000000> lstickdeadzone{ this, "Left Stick Deadzone", 0 };
@@ -79,8 +87,8 @@ struct cfg_pad final : cfg::node
 	cfg::uint<0, 1000000> rstick_anti_deadzone{ this, "Right Stick Anti-Deadzone", 0 };
 	cfg::uint<0, 1000000> ltriggerthreshold{ this, "Left Trigger Threshold", 0 };
 	cfg::uint<0, 1000000> rtriggerthreshold{ this, "Right Trigger Threshold", 0 };
-	cfg::uint<0, 1000000> lpadsquircling{ this, "Left Pad Squircling Factor", 0 };
-	cfg::uint<0, 1000000> rpadsquircling{ this, "Right Pad Squircling Factor", 0 };
+	cfg::uint<0, 1000000> lpadsquircling{ this, "Left Pad Squircling Factor", 8000 };
+	cfg::uint<0, 1000000> rpadsquircling{ this, "Right Pad Squircling Factor", 8000 };
 
 	cfg::uint<0, 255> colorR{ this, "Color Value R", 0 };
 	cfg::uint<0, 255> colorG{ this, "Color Value G", 0 };
@@ -91,8 +99,8 @@ struct cfg_pad final : cfg::node
 	cfg::uint<0, 100> led_battery_indicator_brightness{ this, "LED battery indicator brightness", 50 };
 	cfg::_bool player_led_enabled{ this, "Player LED enabled", true };
 
-	cfg::_bool enable_vibration_motor_large{ this, "Enable Large Vibration Motor", true };
-	cfg::_bool enable_vibration_motor_small{ this, "Enable Small Vibration Motor", true };
+	cfg::uint<0, 200> multiplier_vibration_motor_large{ this, "Large Vibration Motor Multiplier", 100 };
+	cfg::uint<0, 200> multiplier_vibration_motor_small{ this, "Small Vibration Motor Multiplier", 100 };
 	cfg::_bool switch_vibration_motors{ this, "Switch Vibration Motors", false };
 
 	cfg::_enum<mouse_movement_mode> mouse_move_mode{ this, "Mouse Movement Mode", mouse_movement_mode::relative };

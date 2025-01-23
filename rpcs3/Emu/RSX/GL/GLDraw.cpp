@@ -447,7 +447,7 @@ void GLGSRender::bind_texture_env()
 			if (current_fragment_program.texture_state.redirected_textures & (1 << i))
 			{
 				auto root_texture = static_cast<gl::viewable_image*>(view->image());
-				auto stencil_view = root_texture->get_view(gl::GL_REMAP_IDENTITY, rsx::default_remap_vector, gl::image_aspect::stencil);
+				auto stencil_view = root_texture->get_view(rsx::default_remap_vector.with_encoding(gl::GL_REMAP_IDENTITY), gl::image_aspect::stencil);
 				stencil_view->bind(cmd, GL_STENCIL_MIRRORS_START + i);
 			}
 		}
@@ -513,7 +513,7 @@ void GLGSRender::emit_geometry(u32 sub_index)
 
 	if (vertex_state & rsx::vertex_arrays_changed)
 	{
-		analyse_inputs_interleaved(m_vertex_layout);
+		m_draw_processor.analyse_inputs_interleaved(m_vertex_layout, current_vp_metadata);
 	}
 	else if (vertex_state & rsx::vertex_base_changed)
 	{

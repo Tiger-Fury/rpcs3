@@ -18,8 +18,10 @@
 #include "_discord_utils.h"
 #endif
 
+#include "Emu/Audio/audio_utils.h"
 #include "Emu/Io/Null/null_camera_handler.h"
 #include "Emu/Io/Null/null_music_handler.h"
+#include "Emu/Cell/lv2/sys_usbd.h"
 #include "Emu/vfs_config.h"
 #include "util/init_mutex.hpp"
 #include "util/console.h"
@@ -53,7 +55,8 @@
 #endif
 
 #ifdef _WIN32
-#include "Windows.h"
+#include <Usbiodef.h>
+#include <Dbt.h>
 #endif
 
 LOG_CHANNEL(gui_log, "GUI");
@@ -71,6 +74,12 @@ gui_application::~gui_application()
 {
 #ifdef WITH_DISCORD_RPC
 	discord::shutdown();
+#endif
+#ifdef _WIN32
+	if (m_device_notification_handle && !UnregisterDeviceNotification(m_device_notification_handle))
+	{
+		gui_log.error("UnregisterDeviceNotification() failed: %s", fmt::win_error{GetLastError(), nullptr});
+	}
 #endif
 }
 
@@ -111,9 +120,9 @@ bool gui_application::Init()
 		}
 	}
 
-	m_emu_settings.reset(new emu_settings());
-	m_gui_settings.reset(new gui_settings());
-	m_persistent_settings.reset(new persistent_settings());
+	m_emu_settings = std::make_shared<emu_settings>();
+	m_gui_settings = std::make_shared<gui_settings>();
+	m_persistent_settings = std::make_shared<persistent_settings>();
 
 	if (!m_emu_settings->Init())
 	{
@@ -160,14 +169,12 @@ bool gui_application::Init()
 	if (m_gui_settings->GetValue(gui::ib_show_welcome).toBool())
 	{
 		welcome_dialog* welcome = new welcome_dialog(m_gui_settings, false);
-		welcome->exec();
 
-		if (welcome->does_user_want_dark_theme())
+		if (welcome->exec() == QDialog::Rejected)
 		{
-			m_gui_settings->SetValue(gui::m_currentStylesheet, "Darker Style by TheMitoSan");
+			// If the agreement on RPCS3's usage conditions was not accepted by the user, ask the main window to gracefully terminate
+			return false;
 		}
-
-		m_gui_settings->sync();
 	}
 
 	// Check maxfiles
@@ -197,6 +204,19 @@ bool gui_application::Init()
 	// Install native event filter
 #ifdef _WIN32 // Currently only needed for raw mouse input on windows
 	installNativeEventFilter(&m_native_event_filter);
+
+	// Enable usb device hotplug events
+	// Currently only needed for hotplug on windows, as libusb handles other platforms
+	DEV_BROADCAST_DEVICEINTERFACE notification_filter {};
+	notification_filter.dbcc_size = sizeof(DEV_BROADCAST_DEVICEINTERFACE);
+	notification_filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+	notification_filter.dbcc_classguid = GUID_DEVINTERFACE_USB_DEVICE;
+
+	m_device_notification_handle = RegisterDeviceNotification(reinterpret_cast<HWND>(m_main_window->winId()), &notification_filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+	if (!m_device_notification_handle )
+	{
+		gui_log.error("RegisterDeviceNotification() failed: %s", fmt::win_error{GetLastError(), nullptr});
+	}
 #endif
 
 	return true;
@@ -311,6 +331,7 @@ void gui_application::InitializeConnects()
 		connect(m_main_window, &main_window::RequestLanguageChange, this, &gui_application::LoadLanguage);
 		connect(m_main_window, &main_window::RequestGlobalStylesheetChange, this, &gui_application::OnChangeStyleSheetRequest);
 		connect(m_main_window, &main_window::NotifyEmuSettingsChange, this, [this](){ OnEmuSettingsChange(); });
+		connect(m_main_window, &main_window::NotifyShortcutHandlers, this, &gui_application::OnShortcutChange);
 
 		connect(this, &gui_application::OnEmulatorRun, m_main_window, &main_window::OnEmuRun);
 		connect(this, &gui_application::OnEmulatorStop, m_main_window, &main_window::OnEmuStop);
@@ -348,6 +369,34 @@ void gui_application::InitializeConnects()
 
 std::unique_ptr<gs_frame> gui_application::get_gs_frame()
 {
+	// Load AppIcon
+	const QIcon app_icon = m_main_window ? m_main_window->GetAppIcon() : gui::utils::get_app_icon_from_path(Emu.GetBoot(), Emu.GetTitleID());
+
+	if (m_game_window)
+	{
+		// Check if the continuous mode is enabled. We reset the mode after each use in order to ensure that it is only used when explicitly needed.
+		const bool continuous_mode_enabled = Emu.ContinuousModeEnabled(true);
+
+		// Make sure we run the same config
+		const bool is_same_renderer = m_game_window->renderer() == g_cfg.video.renderer;
+
+		if (is_same_renderer && (Emu.IsChildProcess() || continuous_mode_enabled))
+		{
+			gui_log.notice("gui_application: Re-using old game window (IsChildProcess=%d, ContinuousModeEnabled=%d)", Emu.IsChildProcess(), continuous_mode_enabled);
+
+			if (!app_icon.isNull())
+			{
+				m_game_window->setIcon(app_icon);
+			}
+			return std::unique_ptr<gs_frame>(m_game_window);
+		}
+
+		// Clean-up old game window. This should only happen if the renderer changed or there was an unexpected error during boot.
+		Emu.GetCallbacks().close_gs_frame();
+	}
+
+	gui_log.notice("gui_application: Creating new game window");
+
 	extern const std::unordered_map<video_resolution, std::pair<int, int>, value_hash<video_resolution>> g_video_out_resolution_map;
 
 	auto [w, h] = ::at32(g_video_out_resolution_map, g_cfg.video.resolution);
@@ -424,9 +473,6 @@ std::unique_ptr<gs_frame> gui_application::get_gs_frame()
 		frame_geometry.setSize(QSize(w, h));
 	}
 
-	// Load AppIcon
-	const QIcon app_icon = m_main_window ? m_main_window->GetAppIcon() : gui::utils::get_app_icon_from_path(Emu.GetBoot(), Emu.GetTitleID());
-
 	gs_frame* frame = nullptr;
 
 	switch (g_cfg.video.renderer.get())
@@ -445,6 +491,12 @@ std::unique_ptr<gs_frame> gui_application::get_gs_frame()
 	}
 
 	m_game_window = frame;
+
+	connect(m_game_window, &gs_frame::destroyed, this, [this]()
+	{
+		gui_log.notice("gui_application: Deleting old game window");
+		m_game_window = nullptr;
+	});
 
 	return std::unique_ptr<gs_frame>(frame);
 }
@@ -539,6 +591,16 @@ void gui_application::InitializeCallbacks()
 		return nullptr;
 	};
 
+	callbacks.close_gs_frame  = [this]()
+	{
+		if (m_game_window)
+		{
+			gui_log.warning("gui_application: Closing old game window");
+			m_game_window->ignore_stop_events();
+			delete m_game_window;
+			m_game_window = nullptr;
+		}
+	};
 	callbacks.get_gs_frame    = [this]() -> std::unique_ptr<GSFrameBase> { return get_gs_frame(); };
 	callbacks.get_msg_dialog  = [this]() -> std::shared_ptr<MsgDialogBase> { return m_show_gui ? std::make_shared<msg_dialog_frame>() : nullptr; };
 	callbacks.get_osk_dialog  = [this]() -> std::shared_ptr<OskDialogBase> { return m_show_gui ? std::make_shared<osk_dialog_frame>() : nullptr; };
@@ -570,8 +632,10 @@ void gui_application::InitializeCallbacks()
 
 	callbacks.on_missing_fw = [this]()
 	{
-		if (!m_main_window) return false;
-		return m_main_window->OnMissingFw();
+		if (m_main_window)
+		{
+			m_main_window->OnMissingFw();
+		}
 	};
 
 	callbacks.handle_taskbar_progress = [this](s32 type, s32 value)
@@ -580,10 +644,10 @@ void gui_application::InitializeCallbacks()
 		{
 			switch (type)
 			{
-			case 0: static_cast<gs_frame*>(m_game_window)->progress_reset(value); break;
-			case 1: static_cast<gs_frame*>(m_game_window)->progress_increment(value); break;
-			case 2: static_cast<gs_frame*>(m_game_window)->progress_set_limit(value); break;
-			case 3: static_cast<gs_frame*>(m_game_window)->progress_set_value(value); break;
+			case 0: m_game_window->progress_reset(value); break;
+			case 1: m_game_window->progress_increment(value); break;
+			case 2: m_game_window->progress_set_limit(value); break;
+			case 3: m_game_window->progress_set_value(value); break;
 			default: gui_log.fatal("Unknown type in handle_taskbar_progress(type=%d, value=%d)", type, value); break;
 			}
 		}
@@ -597,6 +661,12 @@ void gui_application::InitializeCallbacks()
 	callbacks.get_localized_u32string = [](localized_string_id id, const char* args) -> std::u32string
 	{
 		return localized_emu::get_u32string(id, args);
+	};
+
+	callbacks.get_localized_setting = [this](const cfg::_base* node, u32 enum_index) -> std::string
+	{
+		ensure(!!m_emu_settings);
+		return m_emu_settings->GetLocalizedSetting(node, enum_index);
 	};
 
 	callbacks.play_sound = [this](const std::string& path)
@@ -613,8 +683,8 @@ void gui_application::InitializeCallbacks()
 
 				// Create a new sound effect. Re-using the same object seems to be broken for some users starting with Qt 6.6.3.
 				std::unique_ptr<QSoundEffect> sound_effect = std::make_unique<QSoundEffect>();
-				sound_effect->setSource(QUrl::fromLocalFile(qstr(path)));
-				sound_effect->setVolume(g_cfg.audio.volume * 0.01f);
+				sound_effect->setSource(QUrl::fromLocalFile(QString::fromStdString(path)));
+				sound_effect->setVolume(audio::get_volume());
 				sound_effect->play();
 
 				m_sound_effects.push_back(std::move(sound_effect));
@@ -762,7 +832,7 @@ void gui_application::InitializeCallbacks()
 							verbose_message += ". ";
 						}
 
-						verbose_message += "If Stuck, Report To Developers";
+						verbose_message += tr("If Stuck, Report To Developers").toStdString();
 					}
 					else
 					{
@@ -776,7 +846,7 @@ void gui_application::InitializeCallbacks()
 
 				old_written = bytes_written;
 
-				pdlg->setLabelText(text_base.arg(gui::utils::format_byte_size(bytes_written)).arg(*half_seconds / 2).arg(qstr(verbose_message)));
+				pdlg->setLabelText(text_base.arg(gui::utils::format_byte_size(bytes_written)).arg(*half_seconds / 2).arg(QString::fromStdString(verbose_message)));
 
 				// 300MB -> 50%, 600MB -> 75%, 1200MB -> 87.5% etc
 				const int percent = std::clamp(static_cast<int>(100. - 100. / std::pow(2., std::fmax(0.01, bytes_written * 1. / (300 * 1024 * 1024)))), 2, 100);
@@ -813,13 +883,13 @@ void gui_application::StartPlaytime(bool start_playtime = true)
 		return;
 	}
 
-	const QString serial = qstr(Emu.GetTitleID());
+	const QString serial = QString::fromStdString(Emu.GetTitleID());
 	if (serial.isEmpty())
 	{
 		return;
 	}
 
-	m_persistent_settings->SetLastPlayed(serial, QDateTime::currentDateTime().toString(gui::persistent::last_played_date_format));
+	m_persistent_settings->SetLastPlayed(serial, QDateTime::currentDateTime().toString(gui::persistent::last_played_date_format), true);
 	m_timer_playtime.start();
 	m_timer.start(10000); // Update every 10 seconds in case the emulation crashes
 }
@@ -832,7 +902,7 @@ void gui_application::UpdatePlaytime()
 		return;
 	}
 
-	const QString serial = qstr(Emu.GetTitleID());
+	const QString serial = QString::fromStdString(Emu.GetTitleID());
 	if (serial.isEmpty())
 	{
 		m_timer_playtime.invalidate();
@@ -840,8 +910,8 @@ void gui_application::UpdatePlaytime()
 		return;
 	}
 
-	m_persistent_settings->AddPlaytime(serial, m_timer_playtime.restart());
-	m_persistent_settings->SetLastPlayed(serial, QDateTime::currentDateTime().toString(gui::persistent::last_played_date_format));
+	m_persistent_settings->AddPlaytime(serial, m_timer_playtime.restart(), false);
+	m_persistent_settings->SetLastPlayed(serial, QDateTime::currentDateTime().toString(gui::persistent::last_played_date_format), true);
 }
 
 void gui_application::StopPlaytime()
@@ -851,15 +921,15 @@ void gui_application::StopPlaytime()
 	if (!m_timer_playtime.isValid())
 		return;
 
-	const QString serial = qstr(Emu.GetTitleID());
+	const QString serial = QString::fromStdString(Emu.GetTitleID());
 	if (serial.isEmpty())
 	{
 		m_timer_playtime.invalidate();
 		return;
 	}
 
-	m_persistent_settings->AddPlaytime(serial, m_timer_playtime.restart());
-	m_persistent_settings->SetLastPlayed(serial, QDateTime::currentDateTime().toString(gui::persistent::last_played_date_format));
+	m_persistent_settings->AddPlaytime(serial, m_timer_playtime.restart(), false);
+	m_persistent_settings->SetLastPlayed(serial, QDateTime::currentDateTime().toString(gui::persistent::last_played_date_format), true);
 	m_timer_playtime.invalidate();
 }
 
@@ -889,8 +959,17 @@ void gui_application::OnChangeStyleSheetRequest()
 	// Determine default style
 	if (m_default_style.isEmpty())
 	{
+#ifdef _WIN32
+		// On windows, the custom stylesheets don't seem to work properly unless we use the windowsvista style as default
+		if (QStyleFactory::keys().contains("windowsvista"))
+		{
+			m_default_style = "windowsvista";
+			gui_log.notice("Using '%s' as default style", m_default_style);
+		}
+#endif
+
 		// Use the initial style as default style
-		if (const QStyle* style = QApplication::style())
+		if (const QStyle* style = m_default_style.isEmpty() ? QApplication::style() : nullptr)
 		{
 			m_default_style = style->name();
 			gui_log.notice("Determined '%s' as default style", m_default_style);
@@ -958,23 +1037,23 @@ void gui_application::OnChangeStyleSheetRequest()
 	{
 		QString stylesheet_path;
 		QString stylesheet_dir;
-		QList<QDir> locs;
-		locs << m_gui_settings->GetSettingsDir();
+		std::vector<QDir> locs;
+		locs.push_back(m_gui_settings->GetSettingsDir());
 
 #if !defined(_WIN32)
 #ifdef __APPLE__
-		locs << QCoreApplication::applicationDirPath() + "/../Resources/GuiConfigs/";
+		locs.push_back(QCoreApplication::applicationDirPath() + "/../Resources/GuiConfigs/");
 #else
 #ifdef DATADIR
 		const QString data_dir = (DATADIR);
-		locs << data_dir + "/GuiConfigs/";
+		locs.push_back(data_dir + "/GuiConfigs/");
 #endif
-		locs << QCoreApplication::applicationDirPath() + "/../share/rpcs3/GuiConfigs/";
+		locs.push_back(QCoreApplication::applicationDirPath() + "/../share/rpcs3/GuiConfigs/");
 #endif
-		locs << QCoreApplication::applicationDirPath() + "/GuiConfigs/";
+		locs.push_back(QCoreApplication::applicationDirPath() + "/GuiConfigs/");
 #endif
 
-		for (auto&& loc : locs)
+		for (QDir& loc : locs)
 		{
 			QFileInfo file_info(loc.absoluteFilePath(stylesheet_name + QStringLiteral(".qss")));
 			if (file_info.exists())
@@ -988,10 +1067,10 @@ void gui_application::OnChangeStyleSheetRequest()
 
 		if (QFile file(stylesheet_path); !stylesheet_path.isEmpty() && file.open(QIODevice::ReadOnly | QIODevice::Text))
 		{
-			const QString config_dir = qstr(fs::get_config_dir());
+			const QString config_dir = QString::fromStdString(fs::get_config_dir());
 
 			// Add PS3 fonts
-			QDirIterator ps3_font_it(qstr(g_cfg_vfs.get_dev_flash() + "data/font/"), QStringList() << "*.ttf", QDir::Files, QDirIterator::Subdirectories);
+			QDirIterator ps3_font_it(QString::fromStdString(g_cfg_vfs.get_dev_flash() + "data/font/"), QStringList() << "*.ttf", QDir::Files, QDirIterator::Subdirectories);
 			while (ps3_font_it.hasNext())
 				QFontDatabase::addApplicationFont(ps3_font_it.next());
 
@@ -1024,6 +1103,14 @@ void gui_application::OnChangeStyleSheetRequest()
 	}
 }
 
+void gui_application::OnShortcutChange()
+{
+	if (m_game_window)
+	{
+		m_game_window->update_shortcuts();
+	}
+}
+
 /**
  * Using connects avoids timers being unable to be used in a non-qt thread. So, even if this looks stupid to just call func, it's succinct.
  */
@@ -1049,7 +1136,7 @@ void gui_application::OnAppStateChanged(Qt::ApplicationState state)
 	}
 
 	const auto emu_state = Emu.GetStatus();
-	const bool is_active = state == Qt::ApplicationActive;
+	const bool is_active = state & Qt::ApplicationActive;
 
 	if (emu_state != system_state::paused && emu_state != system_state::running)
 	{
@@ -1114,15 +1201,24 @@ void gui_application::OnAppStateChanged(Qt::ApplicationState state)
 bool gui_application::native_event_filter::nativeEventFilter([[maybe_unused]] const QByteArray& eventType, [[maybe_unused]] void* message, [[maybe_unused]] qintptr* result)
 {
 #ifdef _WIN32
-	if (!Emu.IsRunning() && !g_raw_mouse_handler)
+	if (!Emu.IsRunning() && !Emu.IsStarting() && !g_raw_mouse_handler)
 	{
 		return false;
 	}
 
 	if (eventType == "windows_generic_MSG")
 	{
-		if (MSG* msg = static_cast<MSG*>(message); msg && msg->message == WM_INPUT)
+		if (MSG* msg = static_cast<MSG*>(message); msg && (msg->message == WM_INPUT || msg->message == WM_KEYDOWN || msg->message == WM_KEYUP || msg->message == WM_DEVICECHANGE))
 		{
+			if (msg->message == WM_DEVICECHANGE && (msg->wParam == DBT_DEVICEARRIVAL || msg->wParam == DBT_DEVICEREMOVECOMPLETE))
+			{
+				if (Emu.IsRunning() || Emu.IsStarting())
+				{
+					handle_hotplug_event(msg->wParam == DBT_DEVICEARRIVAL);
+				}
+				return false;
+			}
+
 			if (auto* handler = g_fxo->try_get<MouseHandlerBase>(); handler && handler->type == mouse_handler::raw)
 			{
 				static_cast<raw_mouse_handler*>(handler)->handle_native_event(*msg);

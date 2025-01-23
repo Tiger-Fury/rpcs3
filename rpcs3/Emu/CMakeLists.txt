@@ -4,6 +4,7 @@ add_library(rpcs3_emu STATIC
     IdManager.cpp
     localized_string.cpp
     savestate_utils.cpp
+    scoped_progress_dialog.cpp
     System.cpp
     system_config.cpp
     system_config_types.cpp
@@ -124,6 +125,7 @@ target_sources(rpcs3_emu PRIVATE
 # Audio
 target_sources(rpcs3_emu PRIVATE
     Audio/audio_resampler.cpp
+    Audio/audio_utils.cpp
     Audio/AudioDumper.cpp
     Audio/AudioBackend.cpp
     Audio/Cubeb/CubebBackend.cpp
@@ -170,6 +172,7 @@ target_link_libraries(rpcs3_emu
 
 # Cell
 target_sources(rpcs3_emu PRIVATE
+    Cell/ErrorCodes.cpp
     Cell/MFC.cpp
     Cell/PPUAnalyser.cpp
     Cell/PPUDisAsm.cpp
@@ -239,6 +242,7 @@ target_sources(rpcs3_emu PRIVATE
     Cell/Modules/cellAdec.cpp
     Cell/Modules/cellAtrac.cpp
     Cell/Modules/cellAtracMulti.cpp
+    Cell/Modules/cellAtracXdec.cpp
     Cell/Modules/cellAudio.cpp
     Cell/Modules/cellAudioOut.cpp
     Cell/Modules/cellAuthDialog.cpp
@@ -250,6 +254,7 @@ target_sources(rpcs3_emu PRIVATE
     Cell/Modules/cellCrossController.cpp
     Cell/Modules/cellDaisy.cpp
     Cell/Modules/cellDmux.cpp
+    Cell/Modules/cellDmuxPamf.cpp
     Cell/Modules/cellDtcpIpUtility.cpp
     Cell/Modules/cellFiber.cpp
     Cell/Modules/cellFont.cpp
@@ -389,6 +394,15 @@ target_sources(rpcs3_emu PRIVATE
     CPU/CPUTranslator.cpp
 )
 
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|arm64|aarch64")
+    target_sources(rpcs3_emu PRIVATE
+        CPU/Backends/AArch64/AArch64ASM.cpp
+        CPU/Backends/AArch64/AArch64Common.cpp
+        CPU/Backends/AArch64/AArch64JIT.cpp
+        CPU/Backends/AArch64/AArch64Signal.cpp
+    )
+endif()
+
 target_link_libraries(rpcs3_emu
     PUBLIC 3rdparty::llvm 3rdparty::asmjit)
 
@@ -397,6 +411,7 @@ target_link_libraries(rpcs3_emu
 target_sources(rpcs3_emu PRIVATE
     Io/Buzz.cpp
     Io/camera_config.cpp
+    Io/Dimensions.cpp
     Io/GameTablet.cpp
     Io/GHLtar.cpp
     Io/GunCon3.cpp
@@ -416,6 +431,8 @@ target_sources(rpcs3_emu PRIVATE
     Io/RB3MidiKeyboard.cpp
     Io/recording_config.cpp
     Io/Skylander.cpp
+    Io/TopShotElite.cpp
+    Io/TopShotFearmaster.cpp
     Io/Turntable.cpp
     Io/usb_device.cpp
     Io/usb_vfs.cpp
@@ -430,8 +447,10 @@ target_link_libraries(rpcs3_emu PRIVATE
 target_sources(rpcs3_emu PRIVATE
     NP/fb_helpers.cpp
     NP/np_cache.cpp
+    NP/np_gui_cache.cpp
     NP/np_contexts.cpp
     NP/np_dnshook.cpp
+    NP/np_requests_gui.cpp
     NP/np_handler.cpp
     NP/np_helpers.cpp
     NP/np_notifications.cpp
@@ -440,6 +459,7 @@ target_sources(rpcs3_emu PRIVATE
     NP/np_structs_extra.cpp
     NP/rpcn_client.cpp
     NP/rpcn_config.cpp
+    NP/rpcn_countries.cpp
     NP/upnp_config.cpp
     NP/upnp_handler.cpp
 )
@@ -458,10 +478,12 @@ target_sources(rpcs3_emu PRIVATE
     RSX/Common/TextureUtils.cpp
     RSX/Common/texture_cache.cpp
     RSX/Core/RSXContext.cpp
+    RSX/Core/RSXDrawCommands.cpp
     RSX/gcm_enums.cpp
     RSX/gcm_printing.cpp
     RSX/GL/GLCommonDecompiler.cpp
     RSX/GL/GLCompute.cpp
+    RSX/GL/GLDMA.cpp
     RSX/GL/GLDraw.cpp
     RSX/GL/GLFragmentProgram.cpp
     RSX/GL/GLGSRender.cpp
@@ -487,6 +509,8 @@ target_sources(rpcs3_emu PRIVATE
     RSX/GL/OpenGL.cpp
     RSX/GL/upscalers/fsr1/fsr_pass.cpp
     RSX/GSRender.cpp
+    RSX/Host/MM.cpp
+    RSX/Host/RSXDMAWriter.cpp
     RSX/Null/NullGSRender.cpp
     RSX/NV47/FW/draw_call.cpp
     RSX/NV47/FW/reg_context.cpp
@@ -496,14 +520,17 @@ target_sources(rpcs3_emu PRIVATE
     RSX/NV47/HW/nv308a.cpp
     RSX/NV47/HW/nv406e.cpp
     RSX/NV47/HW/nv4097.cpp
+    RSX/Overlays/FriendsList/overlay_friends_list_dialog.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu_components.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu_main_menu.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu_message_box.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu_page.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu_settings.cpp
+    RSX/Overlays/HomeMenu/overlay_home_menu_savestate.cpp
     RSX/Overlays/Network/overlay_recvmessage_dialog.cpp
     RSX/Overlays/Network/overlay_sendmessage_dialog.cpp
+    RSX/Overlays/Trophies/overlay_trophy_list_dialog.cpp
     RSX/Overlays/overlays.cpp
     RSX/Overlays/overlay_animated_icon.cpp
     RSX/Overlays/overlay_animation.cpp
@@ -531,6 +558,7 @@ target_sources(rpcs3_emu PRIVATE
     RSX/Program/CgBinaryFragmentProgram.cpp
     RSX/Program/CgBinaryVertexProgram.cpp
     RSX/Program/FragmentProgramDecompiler.cpp
+    RSX/Program/FragmentProgramRegister.cpp
     RSX/Program/GLSLCommon.cpp
     RSX/Program/ProgramStateCache.cpp
     RSX/Program/program_util.cpp
@@ -567,6 +595,7 @@ if(TARGET 3rdparty_vulkan)
         RSX/VK/VKAsyncScheduler.cpp
         RSX/VK/VKCommandStream.cpp
         RSX/VK/VKCommonDecompiler.cpp
+        RSX/VK/VKCommonPipelineLayout.cpp
         RSX/VK/VKCompute.cpp
         RSX/VK/VKDMA.cpp
         RSX/VK/VKDraw.cpp
@@ -613,4 +642,8 @@ endif()
 
 if(USE_PRECOMPILED_HEADERS)
     target_precompile_headers(rpcs3_emu PRIVATE "${PROJECT_SOURCE_DIR}/rpcs3/stdafx.h")
+endif()
+
+if(WAYLAND_FOUND)
+    target_link_libraries(rpcs3_emu PRIVATE OpenGL::EGL)
 endif()

@@ -4,6 +4,10 @@
 #include "Emu/vfs_config.h"
 #include "Utilities/Thread.h"
 
+#if defined(ARCH_ARM64)
+#include "Emu/CPU/Backends/AArch64/AArch64Common.h"
+#endif
+
 #ifdef _WIN32
 #include "windows.h"
 #include "sysinfoapi.h"
@@ -17,6 +21,8 @@
 #include <errno.h>
 #endif
 #endif
+
+#include <thread>
 
 #include "util/asm.hpp"
 #include "util/fence.hpp"
@@ -63,6 +69,89 @@ namespace Darwin_ProcessInfo
 	extern bool getLowPowerModeEnabled();
 }
 #endif
+
+namespace utils
+{
+#ifdef _WIN32
+	// Alternative way to read OS version using the registry.
+	static std::string get_fallback_windows_version()
+	{
+		// Some helpers for sanity
+		const auto read_reg_dword = [](HKEY hKey, std::string_view value_name) -> std::pair<bool, DWORD>
+		{
+			DWORD val;
+			DWORD len = sizeof(val);
+			if (ERROR_SUCCESS != RegQueryValueExA(hKey, value_name.data(), nullptr, nullptr, reinterpret_cast<LPBYTE>(&val), &len))
+			{
+				return { false, 0 };
+			}
+			return { true, val };
+		};
+
+		const auto read_reg_sz = [](HKEY hKey, std::string_view value_name) -> std::pair<bool, std::string>
+		{
+			constexpr usz MAX_SZ_LEN = 255;
+			char sz[MAX_SZ_LEN + 1];
+			DWORD sz_len = MAX_SZ_LEN;
+
+			// Safety; null terminate
+			sz[0] = 0;
+			sz[MAX_SZ_LEN] = 0;
+
+			// Read string
+			if (ERROR_SUCCESS != RegQueryValueExA(hKey, value_name.data(), nullptr, nullptr, reinterpret_cast<LPBYTE>(sz), &sz_len))
+			{
+				return { false, "" };
+			}
+
+			// Safety, force null terminator
+			if (sz_len < MAX_SZ_LEN)
+			{
+				sz[sz_len] = 0;
+			}
+			return { true, sz };
+		};
+
+		HKEY hKey;
+		if (ERROR_SUCCESS != RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hKey))
+		{
+			return "Unknown Windows";
+		}
+
+		// ProductName (SZ) - Actual windows install name e.g Windows 10 Pro)
+		// CurrentMajorVersionNumber (DWORD) - e.g 10 for windows 10, 11 for windows 11
+		// CurrentMinorVersionNumber (DWORD) - usually 0 for newer windows, pairs with major version
+		// CurrentBuildNumber (SZ) - Windows build number, e.g 19045, used to identify different releases like 23H2, 24H2, etc
+		// CurrentVersion (SZ) - NT kernel version, e.g 6.3 for Windows 10
+		const auto [product_valid, product_name] = read_reg_sz(hKey, "ProductName");
+		if (!product_valid)
+		{
+			RegCloseKey(hKey);
+			return "Unknown Windows";
+		}
+
+		const auto [check_major, version_major] = read_reg_dword(hKey, "CurrentMajorVersionNumber");
+		const auto [check_minor, version_minor] = read_reg_dword(hKey, "CurrentMinorVersionNumber");
+		const auto [check_build_no, build_no] = read_reg_sz(hKey, "CurrentBuildNumber");
+		const auto [check_nt_ver, nt_ver] = read_reg_sz(hKey, "CurrentVersion");
+
+		// Close the registry key
+		RegCloseKey(hKey);
+
+		std::string version_id = "Unknown";
+		if (check_major && check_minor && check_build_no)
+		{
+			version_id = fmt::format("%u.%u.%s", version_major, version_minor, build_no);
+			if (check_nt_ver)
+			{
+				version_id += " NT" + nt_ver;
+			}
+		}
+
+		return fmt::format("Operating system: %s, Version %s", product_name, version_id);
+	}
+#endif
+}
 
 bool utils::has_ssse3()
 {
@@ -387,9 +476,8 @@ u32 utils::get_rep_movsb_threshold()
 
 std::string utils::get_cpu_brand()
 {
-	std::string brand;
-
 #if defined(ARCH_X64)
+	std::string brand;
 	if (get_cpuid(0x80000000, 0)[0] >= 0x80000004)
 	{
 		for (u32 i = 0; i < 3; i++)
@@ -401,9 +489,6 @@ std::string utils::get_cpu_brand()
 	{
 		brand = "Unknown CPU";
 	}
-#else
-	brand = "Unidentified CPU";
-#endif
 
 	brand.erase(brand.find_last_not_of('\0') + 1);
 	brand.erase(brand.find_last_not_of(' ') + 1);
@@ -415,6 +500,12 @@ std::string utils::get_cpu_brand()
 	}
 
 	return brand;
+#elif defined(ARCH_ARM64)
+	static const auto g_cpu_brand = aarch64::get_cpu_brand();
+	return g_cpu_brand;
+#else
+	return "Unidentified CPU";
+#endif
 }
 
 std::string utils::get_system_info()
@@ -575,10 +666,9 @@ std::string utils::get_OS_version()
 #ifdef _WIN32
 	// GetVersionEx is deprecated, RtlGetVersion is kernel-mode only and AnalyticsInfo is UWP only.
 	// So we're forced to read PEB instead to get Windows version info. It's ugly but works.
-
+#if defined(ARCH_X64)
 	const DWORD peb_offset = 0x60;
 	const INT_PTR peb = __readgsqword(peb_offset);
-
 	const DWORD version_major = *reinterpret_cast<const DWORD*>(peb + 0x118);
 	const DWORD version_minor = *reinterpret_cast<const DWORD*>(peb + 0x11c);
 	const WORD build = *reinterpret_cast<const WORD*>(peb + 0x120);
@@ -596,6 +686,11 @@ std::string utils::get_OS_version()
 	fmt::append(output,
 		"Operating system: Windows, Major: %lu, Minor: %lu, Build: %u, Service Pack: %s, Compatibility mode: %llu",
 		version_major, version_minor, build, has_sp ? holder.data() : "none", compatibility_mode);
+#else
+	// PEB cannot be easily accessed on ARM64, fall back to registry
+	static const auto s_windows_version = utils::get_fallback_windows_version();
+	return s_windows_version;
+#endif
 #elif defined (__APPLE__)
 	const int major_version = Darwin_Version::getNSmajorVersion();
 	const int minor_version = Darwin_Version::getNSminorVersion();
@@ -641,12 +736,32 @@ bool utils::get_low_power_mode()
 #endif
 }
 
-static constexpr ullong round_tsc(ullong val)
+static constexpr ullong round_tsc(ullong val, ullong known_error)
 {
-	return utils::rounded_div(val, 1'000'000) * 1'000'000;
+	if (known_error >= 500'000)
+	{
+		// Do not accept large errors
+		return 0;
+	}
+
+	ullong by = 1000;
+	known_error /= 1000;
+
+	while (known_error && by < 100'000)
+	{
+		by *= 10;
+		known_error /= 10;
+	}
+
+	return utils::rounded_div(val, by) * by;
 }
 
-ullong utils::get_tsc_freq()
+namespace utils
+{
+	u64 s_tsc_freq = 0;
+}
+
+static const bool s_tsc_freq_evaluated = []() -> bool
 {
 	static const ullong cal_tsc = []() -> ullong
 	{
@@ -656,7 +771,7 @@ ullong utils::get_tsc_freq()
 		return r;
 #endif
 
-		if (!has_invariant_tsc())
+		if (!utils::has_invariant_tsc())
 			return 0;
 
 #ifdef _WIN32
@@ -665,64 +780,109 @@ ullong utils::get_tsc_freq()
 			return 0;
 
 		if (freq.QuadPart <= 9'999'999)
-			return round_tsc(freq.QuadPart * 1024);
+			return 0;
 
 		const ullong timer_freq = freq.QuadPart;
 #else
-		const ullong timer_freq = 1'000'000'000;
+		constexpr ullong timer_freq = 1'000'000'000;
 #endif
 
-		// Calibrate TSC
-		constexpr int samples = 40;
-		ullong rdtsc_data[samples];
-		ullong timer_data[samples];
-		[[maybe_unused]] ullong error_data[samples];
+		constexpr u64 retry_count = 1024;
 
-		// Narrow thread affinity to a single core
-		const u64 old_aff = thread_ctrl::get_thread_affinity_mask();
-		thread_ctrl::set_thread_affinity_mask(old_aff & (0 - old_aff));
+		// First is entry is for the onset measurements, last is for the end measurements
+		constexpr usz sample_count = 2;
+		std::array<u64, sample_count> rdtsc_data{};
+		std::array<u64, sample_count> rdtsc_diff{};
+		std::array<u64, sample_count> timer_data{};
 
-#ifndef _WIN32
+#ifdef _WIN32
+		LARGE_INTEGER ctr0;
+		QueryPerformanceCounter(&ctr0);
+		const ullong time_base = ctr0.QuadPart;
+#else
 		struct timespec ts0;
 		clock_gettime(CLOCK_MONOTONIC, &ts0);
-		ullong sec_base = ts0.tv_sec;
+		const ullong sec_base = ts0.tv_sec;
 #endif
 
-		for (int i = 0; i < samples; i++)
+		constexpr usz sleep_time_ms = 40;
+
+		for (usz sample = 0; sample < sample_count; sample++)
 		{
+			for (usz i = 0; i < retry_count; i++)
+			{
+				const u64 rdtsc_read = (utils::lfence(), utils::get_tsc());
 #ifdef _WIN32
-			Sleep(1);
-			error_data[i] = (utils::lfence(), utils::get_tsc());
-			LARGE_INTEGER ctr;
-			QueryPerformanceCounter(&ctr);
-			rdtsc_data[i] = (utils::lfence(), utils::get_tsc());
-			timer_data[i] = ctr.QuadPart;
+				LARGE_INTEGER ctr;
+				QueryPerformanceCounter(&ctr);
 #else
-			usleep(200);
-			error_data[i] = (utils::lfence(), utils::get_tsc());
-			struct timespec ts;
-			clock_gettime(CLOCK_MONOTONIC, &ts);
-			rdtsc_data[i] = (utils::lfence(), utils::get_tsc());
-			timer_data[i] = ts.tv_nsec + (ts.tv_sec - sec_base) * 1'000'000'000;
+				struct timespec ts;
+				clock_gettime(CLOCK_MONOTONIC, &ts);
 #endif
+				const u64 rdtsc_read2 = (utils::lfence(), utils::get_tsc());
+
+#ifdef _WIN32
+				const u64 timer_read = ctr.QuadPart - time_base;
+#else
+				const u64 timer_read = ts.tv_nsec + (ts.tv_sec - sec_base) * 1'000'000'000;
+#endif
+
+				if (i == 0 || (rdtsc_read2 >= rdtsc_read && rdtsc_read2 - rdtsc_read < rdtsc_diff[sample]))
+				{
+					rdtsc_data[sample] = rdtsc_read; // Note: rdtsc_read2 can also be written here because of the assumption of accuracy
+					timer_data[sample] = timer_read;
+					rdtsc_diff[sample] = rdtsc_read2 >= rdtsc_read ? rdtsc_read2 - rdtsc_read : u64{umax};
+				}
+
+				// 80 results in an error range of 4000 hertz (0.00025% of 4GHz CPU, quite acceptable)
+				// Error of 2.5 seconds per month
+				if (rdtsc_read2 - rdtsc_read < 80 && rdtsc_read2 >= rdtsc_read)
+				{
+					break;
+				}
+
+				// 8 yields seems to reduce significantly thread contention, improving accuracy
+				// Even 3 seem to do the job though, but just in case
+				if (i % 128 == 64)
+				{
+					std::this_thread::yield();
+				}
+
+				// Take 50% more yields with the last sample because it helps accuracy additionally the more time that passes
+				if (sample == sample_count - 1 && i % 256 == 128)
+				{
+					std::this_thread::yield();
+				}
+			}
+
+			if (sample < sample_count - 1)
+			{
+				// Sleep between first and last sample
+#ifdef _WIN32
+				Sleep(sleep_time_ms);
+#else
+				usleep(sleep_time_ms * 1000);
+#endif
+			}
 		}
 
-		// Restore main thread affinity
-		thread_ctrl::set_thread_affinity_mask(old_aff);
-
-		// Compute average TSC
-		ullong acc = 0;
-		for (int i = 0; i < samples - 1; i++)
+		if (timer_data[1] == timer_data[0])
 		{
-			acc += (rdtsc_data[i + 1] - rdtsc_data[i]) * timer_freq / (timer_data[i + 1] - timer_data[i]);
+			// Division by zero
+			return 0;
 		}
+
+		const u128 data = u128_from_mul(rdtsc_data[1] - rdtsc_data[0], timer_freq);
+
+		const u64 res = utils::udiv128(static_cast<u64>(data >> 64), static_cast<u64>(data), (timer_data[1] - timer_data[0]));
 
 		// Rounding
-		return round_tsc(acc / (samples - 1));
+		return round_tsc(res, utils::mul_saturate<u64>(utils::add_saturate<u64>(rdtsc_diff[0], rdtsc_diff[1]), utils::aligned_div(timer_freq, timer_data[1] - timer_data[0])));
 	}();
 
-	return cal_tsc;
-}
+	atomic_storage<u64>::release(utils::s_tsc_freq, cal_tsc);
+	return true;
+}();
 
 u64 utils::get_total_memory()
 {

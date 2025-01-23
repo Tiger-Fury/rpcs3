@@ -185,6 +185,7 @@ struct vdec_context final
 	atomic_t<sequence_state> seq_state = sequence_state::closed;
 
 	const AVCodec* codec{};
+	const AVCodecDescriptor* codec_desc{};
 	AVCodecContext* ctx{};
 	SwsContext* sws{};
 
@@ -244,6 +245,13 @@ struct vdec_context final
 		if (!codec)
 		{
 			fmt::throw_exception("avcodec_find_decoder() failed (type=0x%x)", type);
+		}
+
+		codec_desc = avcodec_descriptor_get(codec->id);
+
+		if (!codec_desc)
+		{
+			fmt::throw_exception("avcodec_descriptor_get() failed (type=0x%x)", type);
 		}
 
 		ctx = avcodec_alloc_context3(codec);
@@ -425,10 +433,22 @@ struct vdec_context final
 							fmt::throw_exception("AU decoding error (handle=0x%x, seq_id=%d, cmd_id=%d, error=0x%x): %s", handle, cmd->seq_id, cmd->id, ret, utils::av_error_to_string(ret));
 						}
 
-						if (frame->interlaced_frame)
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(60, 31, 102)
+						const int ticks_per_frame = ctx->ticks_per_frame;
+#else
+						const int ticks_per_frame = (codec_desc->props & AV_CODEC_PROP_FIELDS) ? 2 : 1;
+#endif
+
+#if LIBAVUTIL_VERSION_INT < AV_VERSION_INT(58, 29, 100)
+						const bool is_interlaced = frame->interlaced_frame != 0;
+#else
+						const bool is_interlaced = !!(frame->flags & AV_FRAME_FLAG_INTERLACED);
+#endif
+
+						if (is_interlaced)
 						{
 							// NPEB01838, NPUB31260
-							cellVdec.todo("Interlaced frames not supported (handle=0x%x, seq_id=%d, cmd_id=%d, interlaced_frame=0x%x)", handle, cmd->seq_id, cmd->id, frame->interlaced_frame);
+							cellVdec.todo("Interlaced frames not supported (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, cmd->seq_id, cmd->id);
 						}
 
 						if (frame->repeat_pict)
@@ -479,7 +499,7 @@ struct vdec_context final
 						{
 							if (log_time_base.den != ctx->time_base.den || log_time_base.num != ctx->time_base.num)
 							{
-								cellVdec.error("time_base.num is 0 (handle=0x%x, seq_id=%d, cmd_id=%d, %d/%d, tpf=%d framerate=%d/%d)", handle, cmd->seq_id, cmd->id, ctx->time_base.num, ctx->time_base.den, ctx->ticks_per_frame, ctx->framerate.num, ctx->framerate.den);
+								cellVdec.error("time_base.num is 0 (handle=0x%x, seq_id=%d, cmd_id=%d, %d/%d, tpf=%d framerate=%d/%d)", handle, cmd->seq_id, cmd->id, ctx->time_base.num, ctx->time_base.den, ticks_per_frame, ctx->framerate.num, ctx->framerate.den);
 								log_time_base = ctx->time_base;
 							}
 
@@ -491,8 +511,8 @@ struct vdec_context final
 						}
 						else
 						{
-							u64 amend = u64{90000} * ctx->time_base.num * ctx->ticks_per_frame / ctx->time_base.den;
-							const auto freq = 1. * ctx->time_base.den / ctx->time_base.num / ctx->ticks_per_frame;
+							u64 amend = u64{90000} * ctx->time_base.num * ticks_per_frame / ctx->time_base.den;
+							const auto freq = 1. * ctx->time_base.den / ctx->time_base.num / ticks_per_frame;
 
 							if (std::abs(freq - 23.976) < 0.002)
 								frame.frc = CELL_VDEC_FRC_24000DIV1001;
@@ -515,7 +535,7 @@ struct vdec_context final
 								if (log_time_base.den != ctx->time_base.den || log_time_base.num != ctx->time_base.num)
 								{
 									// 1/1000 usually means that the time stamps are written in 1ms units and that the frame rate may vary.
-									cellVdec.error("Unsupported time_base (handle=0x%x, seq_id=%d, cmd_id=%d, %d/%d, tpf=%d framerate=%d/%d)", handle, cmd->seq_id, cmd->id, ctx->time_base.num, ctx->time_base.den, ctx->ticks_per_frame, ctx->framerate.num, ctx->framerate.den);
+									cellVdec.error("Unsupported time_base (handle=0x%x, seq_id=%d, cmd_id=%d, %d/%d, tpf=%d framerate=%d/%d)", handle, cmd->seq_id, cmd->id, ctx->time_base.num, ctx->time_base.den, ticks_per_frame, ctx->framerate.num, ctx->framerate.den);
 									log_time_base = ctx->time_base;
 								}
 
@@ -639,7 +659,7 @@ extern bool check_if_vdec_contexts_exist()
 
 extern void vdecEntry(ppu_thread& ppu, u32 vid)
 {
-	idm::get<vdec_context>(vid)->exec(ppu, vid);
+	idm::get_unlocked<vdec_context>(vid)->exec(ppu, vid);
 
 	ppu.state += cpu_flag::exit;
 }
@@ -866,7 +886,7 @@ static error_code vdecOpen(ppu_thread& ppu, T type, U res, vm::cptr<CellVdecCb> 
 	}
 
 	// Create decoder context
-	std::shared_ptr<vdec_context> vdec;
+	shared_ptr<vdec_context> vdec;
 
 	if (std::unique_lock lock{g_fxo->get<hle_locks_t>(), std::try_to_lock})
 	{
@@ -889,7 +909,7 @@ static error_code vdecOpen(ppu_thread& ppu, T type, U res, vm::cptr<CellVdecCb> 
 	ppu_execute<&sys_ppu_thread_create>(ppu, +_tid, 0x10000, vid, +res->ppuThreadPriority, +res->ppuThreadStackSize, SYS_PPU_THREAD_CREATE_INTERRUPT, +_name);
 	*handle = vid;
 
-	const auto thrd = idm::get<named_thread<ppu_thread>>(static_cast<u32>(*_tid));
+	const auto thrd = idm::get_unlocked<named_thread<ppu_thread>>(static_cast<u32>(*_tid));
 
 	thrd->cmd_list
 	({
@@ -929,7 +949,7 @@ error_code cellVdecClose(ppu_thread& ppu, u32 handle)
 		return {};
 	}
 
-	auto vdec = idm::get<vdec_context>(handle);
+	auto vdec = idm::get_unlocked<vdec_context>(handle);
 
 	if (!vdec)
 	{
@@ -983,7 +1003,7 @@ error_code cellVdecStartSeq(ppu_thread& ppu, u32 handle)
 
 	cellVdec.warning("cellVdecStartSeq(handle=0x%x)", handle);
 
-	const auto vdec = idm::get<vdec_context>(handle);
+	const auto vdec = idm::get_unlocked<vdec_context>(handle);
 
 	if (!vdec)
 	{
@@ -1035,7 +1055,7 @@ error_code cellVdecEndSeq(ppu_thread& ppu, u32 handle)
 
 	cellVdec.warning("cellVdecEndSeq(handle=0x%x)", handle);
 
-	const auto vdec = idm::get<vdec_context>(handle);
+	const auto vdec = idm::get_unlocked<vdec_context>(handle);
 
 	if (!vdec)
 	{
@@ -1068,7 +1088,7 @@ error_code cellVdecDecodeAu(ppu_thread& ppu, u32 handle, CellVdecDecodeMode mode
 
 	cellVdec.trace("cellVdecDecodeAu(handle=0x%x, mode=%d, auInfo=*0x%x)", handle, +mode, auInfo);
 
-	const auto vdec = idm::get<vdec_context>(handle);
+	const auto vdec = idm::get_unlocked<vdec_context>(handle);
 
 	if (!vdec || !auInfo || !auInfo->size || !auInfo->startAddr)
 	{
@@ -1116,7 +1136,7 @@ error_code cellVdecDecodeAuEx2(ppu_thread& ppu, u32 handle, CellVdecDecodeMode m
 
 	cellVdec.todo("cellVdecDecodeAuEx2(handle=0x%x, mode=%d, auInfo=*0x%x)", handle, +mode, auInfo);
 
-	const auto vdec = idm::get<vdec_context>(handle);
+	const auto vdec = idm::get_unlocked<vdec_context>(handle);
 
 	if (!vdec || !auInfo || !auInfo->size || !auInfo->startAddr)
 	{
@@ -1172,7 +1192,7 @@ error_code cellVdecGetPictureExt(ppu_thread& ppu, u32 handle, vm::cptr<CellVdecP
 
 	cellVdec.trace("cellVdecGetPictureExt(handle=0x%x, format=*0x%x, outBuff=*0x%x, arg4=*0x%x)", handle, format, outBuff, arg4);
 
-	const auto vdec = idm::get<vdec_context>(handle);
+	const auto vdec = idm::get_unlocked<vdec_context>(handle);
 
 	if (!vdec || !format)
 	{
@@ -1225,7 +1245,7 @@ error_code cellVdecGetPictureExt(ppu_thread& ppu, u32 handle, vm::cptr<CellVdecP
 
 	if (notify)
 	{
-		auto vdec_ppu = idm::get<named_thread<ppu_thread>>(vdec->ppu_tid);
+		auto vdec_ppu = idm::get_unlocked<named_thread<ppu_thread>>(vdec->ppu_tid);
 		if (vdec_ppu) thread_ctrl::notify(*vdec_ppu);
 	}
 
@@ -1334,7 +1354,7 @@ error_code cellVdecGetPicItem(ppu_thread& ppu, u32 handle, vm::pptr<CellVdecPicI
 
 	cellVdec.trace("cellVdecGetPicItem(handle=0x%x, picItem=**0x%x)", handle, picItem);
 
-	const auto vdec = idm::get<vdec_context>(handle);
+	const auto vdec = idm::get_unlocked<vdec_context>(handle);
 
 	if (!vdec || !picItem)
 	{
@@ -1576,7 +1596,7 @@ error_code cellVdecSetFrameRate(u32 handle, CellVdecFrameRate frameRateCode)
 {
 	cellVdec.trace("cellVdecSetFrameRate(handle=0x%x, frameRateCode=0x%x)", handle, +frameRateCode);
 
-	const auto vdec = idm::get<vdec_context>(handle);
+	const auto vdec = idm::get_unlocked<vdec_context>(handle);
 
 	// 0x80 seems like a common prefix
 	if (!vdec || (frameRateCode & 0xf8) != 0x80)
@@ -1639,7 +1659,7 @@ error_code cellVdecSetPts(u32 handle, vm::ptr<void> unk)
 {
 	cellVdec.error("cellVdecSetPts(handle=0x%x, unk=*0x%x)", handle, unk);
 
-	const auto vdec = idm::get<vdec_context>(handle);
+	const auto vdec = idm::get_unlocked<vdec_context>(handle);
 
 	if (!vdec || !unk)
 	{

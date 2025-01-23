@@ -107,6 +107,11 @@ namespace rpcs3::utils
 		return emu_dir_.empty() ? fs::get_config_dir() : emu_dir_;
 	}
 
+	std::string get_games_dir()
+	{
+		return g_cfg_vfs.get(g_cfg_vfs.games_dir, get_emu_dir());
+	}
+
 	std::string get_hdd0_dir()
 	{
 		return g_cfg_vfs.get(g_cfg_vfs.dev_hdd0, get_emu_dir());
@@ -306,11 +311,7 @@ namespace rpcs3::utils
 
 	std::string get_custom_config_dir()
 	{
-#ifdef _WIN32
-		return fs::get_config_dir() + "config/custom_configs/";
-#else
-		return fs::get_config_dir() + "custom_configs/";
-#endif
+		return fs::get_config_dir(true) + "custom_configs/";
 	}
 
 	std::string get_custom_config_path(const std::string& identifier)
@@ -325,11 +326,7 @@ namespace rpcs3::utils
 
 	std::string get_input_config_root()
 	{
-#ifdef _WIN32
-		return fs::get_config_dir() + "config/input_configs/";
-#else
-		return fs::get_config_dir() + "input_configs/";
-#endif
+		return fs::get_config_dir(true) + "input_configs/";
 	}
 
 	std::string get_input_config_dir(const std::string& title_id)
